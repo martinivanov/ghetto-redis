@@ -15,6 +15,8 @@
 
 #include "include/logging.h"
 #include "include/protocol.h"
+#include "include/vector.h"
+#include "include/vector_types.h"
 
 int32_t handle_request(int fd) {
     char recv_buf[MESSAGE_HEADER_LENGTH + MESSAGE_MAX_LENGTH + 1];
@@ -63,6 +65,15 @@ void handle(int fd) {
 }
 
 int main() {
+    vector_int32_t v;
+    init_vector_int32_t(&v, 5);
+
+    for (int i = 0; i < 100; i++) {
+        insert_vector_int32_t(&v, i);
+    }
+
+    return 0;
+
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     int val = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
