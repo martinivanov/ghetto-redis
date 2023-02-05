@@ -13,54 +13,8 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
-const size_t MESSAGE_MAX_LENGTH = 4096;
-const size_t MESSAGE_HEADER_LENGTH = 4;
-
-void info(const char* message) {
-    printf("[INFO] %s\n", message);
-}
-
-void warn(const char* message) {
-    printf("[WARN] %s\n", message);
-}
-
-void error(const char* message) {
-    printf("[ERROR] %s\n", message);
-}
-
-void panic(const char* message) {
-    printf("[PANIC] [%d] %s\n", errno, message);
-    abort();
-}
-
-static int32_t read_full(int fd, char *buf, size_t n) {
-    while (n > 0) {
-        ssize_t rv = read(fd, buf, n);
-        if (rv <= 0) {
-            return -1;
-        }
-
-        assert((size_t)rv >= n);
-        n -= (size_t)rv;
-        buf += rv;
-    }
-
-    return 0;
-}
-
-static int32_t write_all(int fd, const char *buf, size_t n) {
-    while(n > 0) {
-        ssize_t rv = write(fd, buf, n);
-        if (rv <= 0) {
-            return -1;
-        }
-        assert((size_t)rv >= 0);
-        n -= (size_t)rv;
-        buf += rv;
-    }
-
-    return 0;
-}
+#include "include/logging.h"
+#include "include/protocol.h"
 
 static int32_t query(int fd, const char *text) {
     uint32_t len = (uint32_t)strlen(text);

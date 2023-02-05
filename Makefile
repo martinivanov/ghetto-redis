@@ -1,9 +1,12 @@
 CC = clang
-CFLAGS = -g
+LDFLAGS = 
+CFLAGS = -g -Wall -Iinclude
 
-build-server: server
+build-server:
+	$(CC) $(CLFAGS) -o server server.c include/logging.c include/protocol.c $(LDFLAGS)
 
-build-client: client
+build-client:
+	$(CC) $(CLFAGS) -o client client.c include/logging.c include/protocol.c $(LDFLAGS)
 
 build: build-server build-client
 
