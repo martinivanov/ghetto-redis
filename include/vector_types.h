@@ -2,9 +2,13 @@
 #define VECTOR_TYPES_H
 
 #include <stdint.h>
+#include <sys/poll.h>
+#include "protocol.h"
 #include "vector.h"
 
-VECTOR_TYPE(int);
-VECTOR_TYPE(int32_t);
+typedef struct pollfd pollfd;
+
+VECTOR_TYPE_PTR(Conn);
+VECTOR_TYPE(pollfd);
 
 #endif

@@ -8,9 +8,6 @@
 #include "logging.h"
 #include "protocol.h"
 
-const size_t MESSAGE_MAX_LENGTH = 4096;
-const size_t MESSAGE_HEADER_LENGTH = 4;
-
 int32_t read_full(int fd, char *buf, size_t n) {
   while (n > 0) {
     ssize_t rv = read(fd, buf, n);

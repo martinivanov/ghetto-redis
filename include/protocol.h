@@ -4,8 +4,27 @@
 #include <stddef.h>
 #include <stdint.h>
 
-extern const size_t MESSAGE_MAX_LENGTH;
-extern const size_t MESSAGE_HEADER_LENGTH;
+#define MESSAGE_HEADER_LENGTH 4
+#define MESSAGE_MAX_LENGTH 4096
+#define MESSAGE_TOTAL_MAX_LENGTH MESSAGE_HEADER_LENGTH + MESSAGE_MAX_LENGTH
+
+enum State {
+    REQUEST = 0,
+    RESPONSE = 1,
+    END = 2,
+};
+
+typedef struct {
+    int fd;
+    enum State state;
+
+    size_t recv_buf_size;
+    uint8_t recv_buf[MESSAGE_TOTAL_MAX_LENGTH];
+
+    size_t send_buf_size;
+    size_t send_buf_sent;
+    uint8_t send_buf[MESSAGE_TOTAL_MAX_LENGTH];
+} Conn;
 
 int32_t read_full(int fd, char *buf, size_t n);
 int32_t write_all(int fd, const char *buf, size_t n);
