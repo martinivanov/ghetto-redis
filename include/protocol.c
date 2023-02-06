@@ -26,7 +26,6 @@ int32_t read_full(int fd, char *buf, size_t n) {
 int32_t write_all(int fd, const char *buf, size_t n) {
   while (n > 0) {
     ssize_t rv = write(fd, buf, n);
-    printf("write_all rv=%zd", rv);
     if (rv <= 0) {
       return -1;
     }

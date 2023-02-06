@@ -16,7 +16,9 @@
 #include "include/logging.h"
 #include "include/protocol.h"
 
-static int32_t query(int fd, const char *text) {
+#define N 4
+
+int32_t send_req(int fd, char *text) {
     uint32_t len = (uint32_t)strlen(text);
     if (len >= MESSAGE_MAX_LENGTH) {
         return -1;
@@ -30,9 +32,13 @@ static int32_t query(int fd, const char *text) {
         return err;
     }
 
+    return 0;
+}
+
+int32_t read_resp(int fd) {
     char recv_buf[MESSAGE_HEADER_LENGTH + MESSAGE_MAX_LENGTH + 1];
     errno = 0;
-    err = read_full(fd, recv_buf, MESSAGE_HEADER_LENGTH);
+    int32_t err = read_full(fd, recv_buf, MESSAGE_HEADER_LENGTH);
     if (err) {
         if (errno == 0) {
             info("EOF");
@@ -58,7 +64,7 @@ static int32_t query(int fd, const char *text) {
 
     recv_buf[MESSAGE_HEADER_LENGTH + resp_len] = '\0';
     char *message = &recv_buf[MESSAGE_HEADER_LENGTH];
-    printf("Server said: %s\n", message);
+    printf("Server said: '%s'\n", message);
 
     return 0;
 }
@@ -77,24 +83,19 @@ int main() {
     }
 
 
-    int32_t err = query(fd, "hello 1");
-    if (err) {
-        goto done;
+    const char *queries[N] = {"hello1", "hello2", "hello3   ", "kur be"};
+    for (size_t i = 0; i < N; i++) {
+        int32_t err = send_req(fd, (char *)queries[i]);
+        if (err) {
+            goto done;
+        }
     }
 
-    err = query(fd, "hello 1");
-    if (err) {
-        goto done;
-    }
-
-    err = query(fd, "hello 2");
-    if (err) {
-        goto done;
-    }
-
-    err = query(fd, "hello 3");
-    if (err) {
-        goto done;
+    for (size_t i = 0; i < N; i++) {
+        int32_t err = read_resp(fd);
+        if (err) {
+            goto done;
+        }
     }
 
 done:
