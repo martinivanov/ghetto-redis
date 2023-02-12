@@ -21,54 +21,6 @@
 #include "include/vector.h"
 #include "include/vector_types.h"
 
-int32_t handle_request(int fd) {
-  char recv_buf[MESSAGE_HEADER_LENGTH + MESSAGE_MAX_LENGTH + 1];
-  errno = 0;
-  int32_t err = read_full(fd, recv_buf, MESSAGE_HEADER_LENGTH);
-  if (err) {
-    if (errno == 0) {
-      info("EOF");
-    } else {
-      warn("read() error");
-    }
-  }
-
-  uint32_t len = 0;
-  memcpy(&len, recv_buf, MESSAGE_HEADER_LENGTH);
-  if (len > MESSAGE_MAX_LENGTH) {
-    warn("message too long");
-    return -1;
-  }
-
-  err = read_full(fd, &recv_buf[MESSAGE_HEADER_LENGTH], len); // skip the header
-  if (err) {
-    warn("read() error");
-    return -1;
-  }
-
-  recv_buf[MESSAGE_HEADER_LENGTH + len] = '\0';
-  printf("client says: '%s' with length %d\n", &recv_buf[MESSAGE_HEADER_LENGTH],
-         len);
-
-  uint32_t send_len = strlen(&recv_buf[MESSAGE_HEADER_LENGTH]);
-  char send_buf[MESSAGE_HEADER_LENGTH + send_len];
-  memcpy(send_buf, &send_len, MESSAGE_HEADER_LENGTH);
-  strcpy(&send_buf[MESSAGE_HEADER_LENGTH], &recv_buf[MESSAGE_HEADER_LENGTH]);
-  printf("server will respond with: '%s' with length %d\n",
-         &send_buf[MESSAGE_HEADER_LENGTH], send_len);
-
-  return write_all(fd, send_buf, MESSAGE_HEADER_LENGTH + send_len);
-}
-
-void handle(int fd) {
-  while (true) {
-    int32_t err = handle_request(fd);
-    if (err) {
-      break;
-    }
-  }
-}
-
 static void fd_set_nb(int fd) {
   errno = 0;
   int flags = fcntl(fd, F_GETFL, 0);
