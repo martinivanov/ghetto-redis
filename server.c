@@ -62,6 +62,7 @@ int32_t accept_new_conn(vector_Conn_ptr *conns, int fd) {
 
   fd_set_nb(client_fd);
   Conn *client = (Conn *)malloc(sizeof(Conn));
+  memset(client, 0, sizeof(*client));
   if (!client) {
     close(client_fd);
     return -1;
@@ -115,26 +116,47 @@ void state_response(Conn *conn) {
   }
 }
 
+const char *strnstr(const char *haystack, const char *needle,
+                    size_t haystack_len) {
+  size_t needle_len = strlen(needle);
+
+  if (needle_len == 0) {
+    return haystack;
+  }
+
+  if (haystack_len < needle_len) {
+    return NULL;
+  }
+
+  size_t search_limit = haystack_len - needle_len + 1;
+  for (size_t i = 0; i < search_limit; i++) {
+    bool match = true;
+    for (size_t j = 0; j < needle_len; j++) {
+      if (haystack[i + j] != needle[j]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      return haystack + i;
+    }
+  }
+  return NULL;
+}
+
 bool strstarts(const char *str, const char *prefix) {
   return strncmp(str, prefix, strlen(prefix)) == 0;
 }
 
 bool try_handle_request(Conn *conn) {
-  if (conn->recv_buf_size == 0) {
-    memset(conn->recv_buf, 0, sizeof(conn->recv_buf));
-    return false;
-  }
-
   // TODO: add a processed offset here?
-  char *crlf = strstr((const char *)conn->recv_buf, "\r\n");
+  const char *crlf =
+      strnstr((const char *)conn->recv_buf, "\r\n", conn->recv_buf_size);
   if (crlf == NULL) {
-    printf("no CRLF separator found\r\n");
     return false;
   }
 
   size_t len = crlf - (char *)conn->recv_buf;
-
-  printf("found newline with length: %zu\n", len);
 
   if (strstarts((const char *)conn->recv_buf, "ECHO ")) {
     size_t echolen = len - 3;
@@ -158,18 +180,13 @@ bool try_handle_request(Conn *conn) {
   // note: frequent memmove is inefficient.
   // note: need better handling for production code.
   if (conn->recv_buf_size < (len + 2)) {
-    printf("recv_buf_size=%zu len=%zu\r\n", conn->recv_buf_size, len);
     return false;
   }
 
   size_t remaining = conn->recv_buf_size - len - 2;
   if (remaining) {
-    printf("got some remaining remaining=%zu\r\n", remaining);
     memmove(conn->recv_buf, &conn->recv_buf[len + 2], remaining);
   }
-
-  // printf("recv_buf_size=%zu remaining=%zu\r\n", conn->recv_buf_size,
-  // remaining);
 
   conn->recv_buf_size = remaining;
 
@@ -186,7 +203,6 @@ bool try_fill_buffer(Conn *conn) {
   do {
     size_t cap = sizeof(conn->recv_buf) - conn->recv_buf_size;
     rv = read(conn->fd, &conn->recv_buf[conn->recv_buf_size], cap);
-    printf("try_fill_buffer rv=%zu\r\n", rv);
   } while (rv < 0 && errno == EINTR);
 
   if (rv < 0 && errno == EAGAIN) {
@@ -212,40 +228,26 @@ bool try_fill_buffer(Conn *conn) {
   }
 
   conn->recv_buf_size += (size_t)rv;
-  printf("conn->recv_buf_size=%zu sizeof(conn->recv_buf)=%zu diff=%zu\r\n",
-         conn->recv_buf_size, sizeof(conn->recv_buf),
-         sizeof(conn->recv_buf) - conn->recv_buf_size);
   assert(conn->recv_buf_size <= sizeof(conn->recv_buf));
 
-  int i = 0;
   while (try_handle_request(conn)) {
-    printf("try_handle_request %d\r\n", i);
-    i++;
   }
 
   bool test = (conn->state == END);
-  printf("conn->state=%d conn->state == END: %d\r\n", conn->state, test);
   return test;
 }
 
 void state_request(Conn *conn) {
-  int i = 0;
   while (try_fill_buffer(conn)) {
-    printf("try_fill_buffer %d\r\n", i);
-
-    i++;
   }
 }
 
 void handle_connection(Conn *conn) {
   if (conn->state == REQUEST) {
-    printf("Handling REQUEST\r\n");
     state_request(conn);
   } else if (conn->state == RESPONSE) {
-    printf("Handling RESPONSE\r\n");
     state_response(conn);
   } else {
-    printf("Handling BAD\r\n");
     assert(0);
   }
 }
