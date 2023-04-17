@@ -44,7 +44,8 @@ void conn_put(vector_Conn_ptr *conns, Conn *conn) {
   }
 
   conns->array[conn->fd] = conn;
-  // TODO: fix this - move it inside the vector logic or replace the vector with a proper map
+  // TODO: fix this - move it inside the vector logic or replace the vector with
+  // a proper map
   conns->used = conns->size;
 }
 
@@ -114,38 +115,61 @@ void state_response(Conn *conn) {
   }
 }
 
+bool strstarts(const char *str, const char *prefix) {
+  return strncmp(str, prefix, strlen(prefix)) == 0;
+}
+
 bool try_handle_request(Conn *conn) {
-  if (conn->recv_buf_size < MESSAGE_HEADER_LENGTH) {
-    // not enough data in the buffer. Will retry in the next iteration
+  if (conn->recv_buf_size == 0) {
+    memset(conn->recv_buf, 0, sizeof(conn->recv_buf));
     return false;
   }
 
-  uint32_t len = 0;
-  memcpy(&len, &conn->recv_buf[0], MESSAGE_HEADER_LENGTH);
-  if (len > MESSAGE_MAX_LENGTH) {
-    warn("message too long");
+  // TODO: add a processed offset here?
+  char *crlf = strstr((const char *)conn->recv_buf, "\r\n");
+  if (crlf == NULL) {
+    printf("no CRLF separator found\r\n");
+    return false;
+  }
+
+  size_t len = crlf - (char *)conn->recv_buf;
+
+  printf("found newline with length: %zu\n", len);
+
+  if (strstarts((const char *)conn->recv_buf, "ECHO ")) {
+    size_t echolen = len - 3;
+    memcpy(conn->send_buf, &conn->recv_buf[5], echolen);
+    conn->send_buf_size = echolen;
+  } else if (strstarts((const char *)conn->recv_buf, "PING")) {
+    const char *PONG = "PONG\r\n";
+    memcpy(conn->send_buf, PONG, sizeof(&PONG));
+    conn->send_buf_size = sizeof(&PONG) - 1;
+  } else if (strstarts((const char *)conn->recv_buf, "GET")) {
+  } else if (strstarts((const char *)conn->recv_buf, "SET")) {
+  } else if (strstarts((const char *)conn->recv_buf, "DEL")) {
+  } else if (strstarts((const char *)conn->recv_buf, "QUIT")) {
     conn->state = END;
     return false;
+  } else {
+    // invalid command
   }
-
-  if (MESSAGE_HEADER_LENGTH + len > conn->recv_buf_size) {
-    return false;
-  }
-
-  // echo back
-  memcpy(&conn->send_buf[0], &len, MESSAGE_HEADER_LENGTH);
-  memcpy(&conn->send_buf[MESSAGE_HEADER_LENGTH],
-         &conn->recv_buf[MESSAGE_HEADER_LENGTH], len);
-  conn->send_buf_size = MESSAGE_HEADER_LENGTH + len;
 
   // remove the request from the buffer.
   // note: frequent memmove is inefficient.
   // note: need better handling for production code.
-  size_t remaining = conn->recv_buf_size - MESSAGE_HEADER_LENGTH - len;
-  if (remaining) {
-    memmove(conn->recv_buf, &conn->recv_buf[MESSAGE_HEADER_LENGTH + len],
-            remaining);
+  if (conn->recv_buf_size < (len + 2)) {
+    printf("recv_buf_size=%zu len=%zu\r\n", conn->recv_buf_size, len);
+    return false;
   }
+
+  size_t remaining = conn->recv_buf_size - len - 2;
+  if (remaining) {
+    printf("got some remaining remaining=%zu\r\n", remaining);
+    memmove(conn->recv_buf, &conn->recv_buf[len + 2], remaining);
+  }
+
+  // printf("recv_buf_size=%zu remaining=%zu\r\n", conn->recv_buf_size,
+  // remaining);
 
   conn->recv_buf_size = remaining;
 
@@ -162,6 +186,7 @@ bool try_fill_buffer(Conn *conn) {
   do {
     size_t cap = sizeof(conn->recv_buf) - conn->recv_buf_size;
     rv = read(conn->fd, &conn->recv_buf[conn->recv_buf_size], cap);
+    printf("try_fill_buffer rv=%zu\r\n", rv);
   } while (rv < 0 && errno == EINTR);
 
   if (rv < 0 && errno == EAGAIN) {
@@ -187,25 +212,40 @@ bool try_fill_buffer(Conn *conn) {
   }
 
   conn->recv_buf_size += (size_t)rv;
-  assert(conn->recv_buf_size < sizeof(conn->recv_buf) - conn->recv_buf_size);
+  printf("conn->recv_buf_size=%zu sizeof(conn->recv_buf)=%zu diff=%zu\r\n",
+         conn->recv_buf_size, sizeof(conn->recv_buf),
+         sizeof(conn->recv_buf) - conn->recv_buf_size);
+  assert(conn->recv_buf_size <= sizeof(conn->recv_buf));
 
+  int i = 0;
   while (try_handle_request(conn)) {
+    printf("try_handle_request %d\r\n", i);
+    i++;
   }
 
-  return (conn->state == END);
+  bool test = (conn->state == END);
+  printf("conn->state=%d conn->state == END: %d\r\n", conn->state, test);
+  return test;
 }
 
 void state_request(Conn *conn) {
+  int i = 0;
   while (try_fill_buffer(conn)) {
+    printf("try_fill_buffer %d\r\n", i);
+
+    i++;
   }
 }
 
 void handle_connection(Conn *conn) {
   if (conn->state == REQUEST) {
+    printf("Handling REQUEST\r\n");
     state_request(conn);
   } else if (conn->state == RESPONSE) {
+    printf("Handling RESPONSE\r\n");
     state_response(conn);
   } else {
+    printf("Handling BAD\r\n");
     assert(0);
   }
 }
@@ -239,7 +279,7 @@ int main() {
   vector_pollfd poll_args;
   init_vector_pollfd(&poll_args, 32);
   while (true) {
-    printf("Polling\n");
+    // printf("Polling\n");
     clear_vector_pollfd(&poll_args);
 
     struct pollfd pfd = {fd, POLLIN, 0};
