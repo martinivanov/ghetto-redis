@@ -1,6 +1,7 @@
 #ifndef PROTOCOL_H
 #define PROTOCOL_H
 
+#include <stdint.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -22,6 +23,8 @@ typedef struct {
     size_t send_buf_size;
     size_t send_buf_sent;
     uint8_t send_buf[MESSAGE_MAX_LENGTH];
+
+    uint64_t idle_start;
 } Conn;
 
 int32_t read_full(int fd, char *buf, size_t n);

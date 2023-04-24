@@ -14,6 +14,7 @@
 #include <sys/poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "include/logging.h"
@@ -49,6 +50,12 @@ void conn_put(vector_Conn_ptr *conns, Conn *conn) {
   conns->used = conns->size;
 }
 
+static uint64_t get_monotonic_usec() {
+  struct timespec tv = {0, 0};
+  clock_gettime(CLOCK_MONOTONIC, &tv);
+  return tv.tv_sec * 1000000 + tv.tv_nsec / 1000;
+}
+
 int32_t accept_new_conn(vector_Conn_ptr *conns, int fd) {
   struct sockaddr_in client_addr = {};
   socklen_t socklen = sizeof(client_addr);
@@ -73,6 +80,8 @@ int32_t accept_new_conn(vector_Conn_ptr *conns, int fd) {
   client->recv_buf_size = 0;
   client->send_buf_size = 0;
   client->send_buf_sent = 0;
+
+  client->idle_start = get_monotonic_usec();
 
   conn_put(conns, client);
 
@@ -148,12 +157,12 @@ bool strstarts(const uint8_t *str, const uint8_t *prefix, size_t prefixlen) {
   return strncmp((const char *)str, (const char *)prefix, prefixlen) == 0;
 }
 
-static const uint8_t CMD_ECHO[] = { 'E', 'C', 'H', 'O' };
-static const uint8_t CMD_PING[] = { 'P', 'I', 'N', 'G' };
-static const uint8_t CMD_GET[] = { 'G', 'E', 'T' };
-static const uint8_t CMD_SET[] = { 'S', 'E', 'T' };
-static const uint8_t CMD_DEL[] = { 'D', 'E', 'L' };
-static const uint8_t CMD_QUIT[] = { 'Q', 'U', 'I', 'T' };
+static const uint8_t CMD_ECHO[] = {'E', 'C', 'H', 'O'};
+static const uint8_t CMD_PING[] = {'P', 'I', 'N', 'G'};
+static const uint8_t CMD_GET[] = {'G', 'E', 'T'};
+static const uint8_t CMD_SET[] = {'S', 'E', 'T'};
+static const uint8_t CMD_DEL[] = {'D', 'E', 'L'};
+static const uint8_t CMD_QUIT[] = {'Q', 'U', 'I', 'T'};
 
 bool try_handle_request(Conn *conn) {
   // TODO: add a processed offset here?
@@ -179,8 +188,7 @@ bool try_handle_request(Conn *conn) {
   } else if (strstarts(conn->recv_buf, CMD_QUIT, sizeof(CMD_QUIT))) {
     conn->state = END;
     return false;
-  } 
-  else {
+  } else {
     // invalid command
   }
 
@@ -251,6 +259,7 @@ void state_request(Conn *conn) {
 }
 
 void handle_connection(Conn *conn) {
+  conn->idle_start = get_monotonic_usec();
   if (conn->state == REQUEST) {
     state_request(conn);
   } else if (conn->state == RESPONSE) {
@@ -258,6 +267,12 @@ void handle_connection(Conn *conn) {
   } else {
     assert(0);
   }
+}
+
+void conn_done(vector_Conn_ptr *conns, Conn *conn) {
+  conns->array[conn->fd] = NULL;
+  close(conn->fd);
+  free(conn);
 }
 
 int main() {
@@ -322,10 +337,20 @@ int main() {
         printf("handling connection %d\n", pfd.fd);
         handle_connection(conn);
         if (conn->state == END) {
-          conns.array[conn->fd] = NULL;
-          close(conn->fd);
-          free(conn);
+          conn_done(&conns, conn);
         }
+      }
+    }
+
+    uint64_t now_us = get_monotonic_usec();
+    for (int i = 0; i < size_vector_Conn_ptr(&conns); i++) {
+      Conn *conn = conns.array[i];
+      if (!conn) {
+        continue;
+      }
+
+      if (now_us - conn->idle_start > 5000000) {
+        conn_done(&conns, conn);
       }
     }
 
