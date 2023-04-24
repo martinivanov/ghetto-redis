@@ -1,4 +1,4 @@
-#include <arpa/inet.h>
+
 #include <asm-generic/errno-base.h>
 #include <asm-generic/socket.h>
 #include <assert.h>
@@ -144,9 +144,16 @@ const char *strnstr(const char *haystack, const char *needle,
   return NULL;
 }
 
-bool strstarts(const char *str, const char *prefix) {
-  return strncmp(str, prefix, strlen(prefix)) == 0;
+bool strstarts(const uint8_t *str, const uint8_t *prefix, size_t prefixlen) {
+  return strncmp((const char *)str, (const char *)prefix, prefixlen) == 0;
 }
+
+static const uint8_t CMD_ECHO[] = { 'E', 'C', 'H', 'O' };
+static const uint8_t CMD_PING[] = { 'P', 'I', 'N', 'G' };
+static const uint8_t CMD_GET[] = { 'G', 'E', 'T' };
+static const uint8_t CMD_SET[] = { 'S', 'E', 'T' };
+static const uint8_t CMD_DEL[] = { 'D', 'E', 'L' };
+static const uint8_t CMD_QUIT[] = { 'Q', 'U', 'I', 'T' };
 
 bool try_handle_request(Conn *conn) {
   // TODO: add a processed offset here?
@@ -158,21 +165,22 @@ bool try_handle_request(Conn *conn) {
 
   size_t len = crlf - (char *)conn->recv_buf;
 
-  if (strstarts((const char *)conn->recv_buf, "ECHO ")) {
-    size_t echolen = len - 3;
-    memcpy(conn->send_buf, &conn->recv_buf[5], echolen);
+  if (strstarts(conn->recv_buf, CMD_ECHO, sizeof(CMD_ECHO))) {
+    size_t echolen = len - sizeof(CMD_ECHO) + 1;
+    memcpy(conn->send_buf, &conn->recv_buf[sizeof(CMD_ECHO) + 1], echolen);
     conn->send_buf_size = echolen;
-  } else if (strstarts((const char *)conn->recv_buf, "PING")) {
-    const char *PONG = "PONG\r\n";
+  } else if (strstarts(conn->recv_buf, CMD_PING, sizeof(CMD_PING))) {
+    static const char *PONG = "PONG\r\n";
     memcpy(conn->send_buf, PONG, sizeof(&PONG));
     conn->send_buf_size = sizeof(&PONG) - 1;
-  } else if (strstarts((const char *)conn->recv_buf, "GET")) {
-  } else if (strstarts((const char *)conn->recv_buf, "SET")) {
-  } else if (strstarts((const char *)conn->recv_buf, "DEL")) {
-  } else if (strstarts((const char *)conn->recv_buf, "QUIT")) {
+  } else if (strstarts(conn->recv_buf, CMD_GET, sizeof(CMD_GET))) {
+  } else if (strstarts(conn->recv_buf, CMD_SET, sizeof(CMD_SET))) {
+  } else if (strstarts(conn->recv_buf, CMD_DEL, sizeof(CMD_DEL))) {
+  } else if (strstarts(conn->recv_buf, CMD_QUIT, sizeof(CMD_QUIT))) {
     conn->state = END;
     return false;
-  } else {
+  } 
+  else {
     // invalid command
   }
 
