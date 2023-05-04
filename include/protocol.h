@@ -1,12 +1,11 @@
 #ifndef PROTOCOL_H
 #define PROTOCOL_H
 
+#include <stdint.h>
 #include <stddef.h>
 #include <stdint.h>
 
-#define MESSAGE_HEADER_LENGTH 4
-#define MESSAGE_MAX_LENGTH 4096
-#define MESSAGE_TOTAL_MAX_LENGTH MESSAGE_HEADER_LENGTH + MESSAGE_MAX_LENGTH
+#define MESSAGE_MAX_LENGTH 8192
 
 enum State {
     REQUEST = 0,
@@ -19,11 +18,13 @@ typedef struct {
     enum State state;
 
     size_t recv_buf_size;
-    uint8_t recv_buf[MESSAGE_TOTAL_MAX_LENGTH];
+    uint8_t recv_buf[MESSAGE_MAX_LENGTH];
 
     size_t send_buf_size;
     size_t send_buf_sent;
-    uint8_t send_buf[MESSAGE_TOTAL_MAX_LENGTH];
+    uint8_t send_buf[MESSAGE_MAX_LENGTH];
+
+    uint64_t idle_start;
 } Conn;
 
 int32_t read_full(int fd, char *buf, size_t n);

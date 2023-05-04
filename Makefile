@@ -8,7 +8,7 @@ build-server:
 build-client:
 	$(CC) $(CLFAGS) -o client client.c include/logging.c include/protocol.c $(LDFLAGS)
 
-build: build-server build-client
+build: build-server #build-client
 
 all: clean build
 
