@@ -165,7 +165,7 @@ static const uint8_t CMD_DEL[] = {'D', 'E', 'L'};
 static const uint8_t CMD_QUIT[] = {'Q', 'U', 'I', 'T'};
 
 bool try_handle_request(Conn *conn) {
-  // TODO: add a processed offset here?
+  // TODO: add a processed offset here instead of memmove?
   const char *crlf =
       strnstr((const char *)conn->recv_buf, "\r\n", conn->recv_buf_size);
   if (crlf == NULL) {
@@ -183,8 +183,37 @@ bool try_handle_request(Conn *conn) {
     memcpy(conn->send_buf, PONG, sizeof(&PONG));
     conn->send_buf_size = sizeof(&PONG) - 1;
   } else if (strstarts(conn->recv_buf, CMD_GET, sizeof(CMD_GET))) {
+    const char *args = (const char *)&conn->recv_buf[sizeof(CMD_GET) + 1];
+    const size_t keylen = crlf - args;
+    char *key = malloc(keylen + 1);
+    memcpy(key, args, keylen);
+    key[keylen] = '\0';
+    printf("keylen=%zu key=%s\n", keylen, key);
   } else if (strstarts(conn->recv_buf, CMD_SET, sizeof(CMD_SET))) {
+    const char *args = (const char *)&conn->recv_buf[sizeof(CMD_SET) + 1];
+    const char *arg_delim = strnstr(args, " ", len - sizeof(CMD_SET) - 1);
+    if (!arg_delim) {
+      static const char *ERROR = "ERROR\r\n";
+      memcpy(conn->send_buf, ERROR, sizeof(&ERROR));
+      conn->send_buf_size = sizeof(&ERROR) - 1;
+    } else {
+      const size_t keylen = arg_delim - args;
+      char *key = malloc(keylen + 1);
+      memcpy(key, args, keylen);
+      key[keylen] = '\0';
+      const size_t vallen = crlf - arg_delim - 1;
+      char *val = malloc(vallen + 1);
+      memcpy(val, arg_delim + 1, vallen);
+      val[vallen] = '\0';
+      printf("keylen=%zu key=%s vallen=%zu val=%s\n", keylen, key, vallen, val);
+    }
   } else if (strstarts(conn->recv_buf, CMD_DEL, sizeof(CMD_DEL))) {
+    const char *args = (const char *)&conn->recv_buf[sizeof(CMD_DEL) + 1];
+    const size_t keylen = crlf - args;
+    char *key = malloc(keylen + 1);
+    memcpy(key, args, keylen);
+    key[keylen] = '\0';
+    printf("keylen=%zu key=%s\n", keylen, key);
   } else if (strstarts(conn->recv_buf, CMD_QUIT, sizeof(CMD_QUIT))) {
     conn->state = END;
     return false;
