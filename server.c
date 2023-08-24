@@ -27,9 +27,9 @@
 static struct hashmap *state = NULL;
 
 typedef struct {
-  char *key;
+  uint8_t *key;
   size_t keylen;
-  char *val;
+  uint8_t *val;
   size_t vallen;
 } Entry;
 
@@ -37,6 +37,7 @@ const size_t MAX_ARGC = 8;
 
 typedef struct {
   size_t argc;
+  size_t len;
   uint8_t offsets[MAX_ARGC];
   uint8_t lens[MAX_ARGC];
 } CmdArgs;
@@ -182,12 +183,12 @@ static const uint8_t CMD_QUIT[] = {'Q', 'U', 'I', 'T'};
 static const uint8_t CRLF[] = {'\r', '\n'};
 static const uint8_t SPACE[] = {' '};
 
-static const uint8_t RESPONSE_OK[] = {'O', 'K', '\r', '\n', '\0'};
-static const uint8_t RESPONSE_ERROR[] = {'E', 'R', 'R', 'O', 'R', '\r', '\n', '\0'};
-static const uint8_t RESPONSE_NOT_FOUND[] = {'N', 'O', 'T', '_', 'F', 'O', 'U', 'N', 'D', '\r', '\n', '\0'};
-static const uint8_t RESPONSE_DELETED[] = {'D', 'E', 'L', 'E', 'T', 'E', 'D', '\r', '\n', '\0'};
-static const uint8_t RESPONSE_PONG[] = {'P', 'O', 'N', 'G', '\r', '\n', '\0'};
-static const uint8_t RESPONSE_END[] = {'E', 'N', 'D', '\r', '\n', '\0'};
+static const uint8_t RESPONSE_OK[] = {'O', 'K', '\r', '\n'};
+static const uint8_t RESPONSE_ERROR[] = {'E', 'R', 'R', 'O', 'R', '\r', '\n'};
+static const uint8_t RESPONSE_NOT_FOUND[] = {'N', 'O', 'T', '_', 'F', 'O', 'U', 'N', 'D', '\r', '\n'};
+static const uint8_t RESPONSE_DELETED[] = {'D', 'E', 'L', 'E', 'T', 'E', 'D', '\r', '\n'};
+static const uint8_t RESPONSE_PONG[] = {'P', 'O', 'N', 'G', '\r', '\n'};
+static const uint8_t RESPONSE_END[] = {'E', 'N', 'D', '\r', '\n'};
 
 // arbitrary chosen max argc
 
@@ -195,8 +196,10 @@ static const uint8_t RESPONSE_END[] = {'E', 'N', 'D', '\r', '\n', '\0'};
 CmdArgs* parse_inline_request(Conn *conn) {
   CmdArgs *args = malloc(sizeof(CmdArgs));
   args->argc = 0;
+  args->len = 0;
 
   size_t offset = 0;
+  size_t total_len = 0;
   size_t len = 0;
   bool in_arg = false;
   bool crlf = false;
@@ -208,6 +211,7 @@ CmdArgs* parse_inline_request(Conn *conn) {
         args->argc++;
         in_arg = false;
       }
+      args->len++;
     } else if (conn->recv_buf[i] == '\r') {
       if (in_arg) {
         args->offsets[args->argc] = offset;
@@ -233,6 +237,7 @@ CmdArgs* parse_inline_request(Conn *conn) {
         in_arg = true;
       }
       len++;
+      args->len++;
     }
   }
 
@@ -249,60 +254,85 @@ bail:
   return NULL;
 }
 
+void write_simple_error(Conn *conn, const char *prefix, const char *msg) {
+  conn->send_buf_size = sprintf((char*)&conn->send_buf, "-%s %s\r\n", prefix, msg);
+}
+
+void write_simple_generic_error(Conn *conn, const char *msg) {
+  write_simple_error(conn, "ERR", msg);
+}
+
+void write_simple_string(Conn *conn, const char *msg) {
+  conn->send_buf_size = sprintf((char*)&conn->send_buf, "+%s\r\n", msg);
+}
+
+void write_bulk_string(Conn *conn, const uint8_t *data, size_t len) {
+  size_t written = 0;
+  written += (size_t)sprintf((char*)&conn->send_buf[written], "$%zu", len);
+  memcpy(&conn->send_buf[written], CRLF, sizeof(CRLF));
+  written += 2;
+  memcpy(&conn->send_buf[written], data, len);
+  written += len;
+  memcpy(&conn->send_buf[written], CRLF, sizeof(CRLF));
+  written += 2;
+  conn->send_buf_size = written;
+}
+
+void write_null_bulk_string(Conn *conn) {
+  conn->send_buf_size = sprintf((char*)&conn->send_buf, "$-1\r\n");
+}
+
+void write_integer(Conn *conn, int64_t val) {
+  conn->send_buf_size = sprintf((char*)&conn->send_buf, ":%ld\r\n", val);
+}
+
 void handle_command(Conn *conn, CmdArgs *args) {
   const uint8_t *cmd = &conn->recv_buf[args->offsets[0]];
   const size_t cmdlen = args->lens[0];
 
   if (strnstr(cmd, CMD_ECHO, cmdlen, sizeof(CMD_ECHO))) {
-    const uint8_t *echo = &conn->recv_buf[args->offsets[1]];
-    const size_t echolen = args->lens[1];
-    memcpy(conn->send_buf, echo, echolen);
-    memcpy(&conn->send_buf[echolen], CRLF, sizeof(CRLF));
-    conn->send_buf[echolen + 2] = '\0';
-    conn->send_buf_size = echolen + 2;
+    if (args->argc == 2) {
+      const uint8_t *echo = &conn->recv_buf[args->offsets[1]];
+      const size_t echolen = args->lens[1];
+      write_bulk_string(conn, echo, echolen);
+    } else {
+      write_simple_generic_error(conn, "wrong number of arguments for 'echo' command");
+    }
   }
   else if (strnstr(cmd, CMD_PING, cmdlen, sizeof(CMD_PING))) {
-    memcpy(conn->send_buf, RESPONSE_PONG, sizeof(RESPONSE_PONG));
-    conn->send_buf_size = sizeof(RESPONSE_PONG); 
+    write_simple_string(conn, "PONG");
   }
   else if (strnstr(cmd, CMD_GET, cmdlen, sizeof(CMD_GET))) {
     const uint8_t *key = &conn->recv_buf[args->offsets[1]];
     const size_t keylen = args->lens[1];
 
-    Entry *entry = (Entry*)hashmap_get(state, &(Entry){.key = (void*)args, .keylen = keylen});
+    Entry *entry = (Entry*)hashmap_get(state, &(Entry){.key = args, .keylen = keylen});
     if (entry) {
-      memcpy(conn->send_buf, entry->val, entry->vallen);
-      memcpy(&conn->send_buf[entry->vallen], CRLF, sizeof(CRLF));
-      conn->send_buf[entry->vallen + 2] = '\0';
-      conn->send_buf_size = entry->vallen + 2; 
+      write_bulk_string(conn, entry->val, entry->vallen);
     } else {
-      memcpy(conn->send_buf, RESPONSE_NOT_FOUND, sizeof(RESPONSE_NOT_FOUND));
-      conn->send_buf_size = sizeof(RESPONSE_NOT_FOUND);
+      write_null_bulk_string(conn);
     }
   }
   else if (strnstr(cmd, CMD_SET, cmdlen, sizeof(CMD_SET))) {
     const size_t keylen = args->lens[1];
     const uint8_t *key = (uint8_t*)malloc(keylen);
-    memcpy(key, &conn->recv_buf[args->offsets[1]], keylen);
+    memcpy((void *)key, &conn->recv_buf[args->offsets[1]], keylen);
 
     const size_t vallen = args->lens[2];
     const uint8_t *val = (uint8_t*)malloc(vallen);
-    memcpy(val, &conn->recv_buf[args->offsets[2]], vallen);
+    memcpy((void *)val, &conn->recv_buf[args->offsets[2]], vallen);
 
     Entry *entry = &(Entry){.key = key, .keylen = keylen, .val = val, .vallen = vallen};
     hashmap_set(state, entry);
-    memcpy(conn->send_buf, RESPONSE_OK, sizeof(RESPONSE_OK));
-    conn->send_buf_size = sizeof(RESPONSE_OK);
+    write_simple_string(conn, "OK");
   }
   else if (strnstr(cmd, CMD_DEL, cmdlen, sizeof(CMD_DEL))) {
     const uint8_t *key = &conn->recv_buf[args->offsets[1]];
     const size_t keylen = args->lens[1];
     hashmap_delete(state, &(Entry){.key = (void*)key, .keylen = keylen});
-    memcpy(conn->send_buf, RESPONSE_DELETED, sizeof(RESPONSE_DELETED));
-    conn->send_buf_size = sizeof(RESPONSE_DELETED);
+    write_integer(conn, 1);
   } else {
-    memcpy(conn->send_buf, RESPONSE_ERROR, sizeof(RESPONSE_ERROR));
-    conn->send_buf_size = sizeof(RESPONSE_ERROR);
+    write_integer(conn, 0);
   }
 }
 
@@ -324,14 +354,15 @@ bool try_handle_request(Conn *conn) {
 
   handle_command(conn, args);
 
-  size_t total_len = args->offsets[args->argc - 1] + args->lens[args->argc - 1];
-  if (conn->recv_buf_size < (total_len + 2)) {
+  if (conn->recv_buf_size < (args->len + 2)) {
     goto bail;  
   }
 
-  size_t remaining = conn->recv_buf_size - total_len - 2;
+  size_t remaining = conn->recv_buf_size - args->len - 2;
+  printf("conn->recv_buf_size: %zu args->len: %zu\n", conn->recv_buf_size, args->len);
+  printf("Remaining: %zu\n", remaining);
   if (remaining) {
-    memmove(conn->recv_buf, &conn->recv_buf[total_len + 2], remaining);
+    memmove(conn->recv_buf, &conn->recv_buf[args->len + 2], remaining);
   }
 
   conn->recv_buf_size = remaining;
