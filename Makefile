@@ -3,7 +3,7 @@ LDFLAGS =
 CFLAGS = -g -Wall -Iinclude
 
 build-server:
-	$(CC) $(CLFAGS) -o server server.c include/logging.c include/protocol.c $(LDFLAGS)
+	$(CC) $(CLFAGS) -o server server.c include/logging.c include/protocol.c include/hashmap.c $(LDFLAGS)
 
 build-client:
 	$(CC) $(CLFAGS) -o client client.c include/logging.c include/protocol.c $(LDFLAGS)

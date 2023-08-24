@@ -22,6 +22,26 @@
 #include "include/vector.h"
 #include "include/vector_types.h"
 
+#include "include/hashmap.h"
+
+static struct hashmap *state = NULL;
+
+typedef struct {
+  char *key;
+  size_t keylen;
+  char *val;
+  size_t vallen;
+} Entry;
+
+const size_t MAX_ARGC = 8;
+
+typedef struct {
+  size_t argc;
+  uint8_t offsets[MAX_ARGC];
+  uint8_t lens[MAX_ARGC];
+} CmdArgs;
+
+
 static void fd_set_nb(int fd) {
   errno = 0;
   int flags = fcntl(fd, F_GETFL, 0);
@@ -125,22 +145,17 @@ void state_response(Conn *conn) {
   }
 }
 
-const char *strnstr(const char *haystack, const char *needle,
-                    size_t haystack_len) {
-  size_t needle_len = strlen(needle);
-
+const uint8_t *strnstr(const uint8_t *haystack, const uint8_t *needle, size_t haystack_len, size_t needle_len) {
   if (needle_len == 0) {
+    printf("Needle len is 0\n");
     return haystack;
-  }
-
-  if (haystack_len < needle_len) {
-    return NULL;
   }
 
   size_t search_limit = haystack_len - needle_len + 1;
   for (size_t i = 0; i < search_limit; i++) {
     bool match = true;
     for (size_t j = 0; j < needle_len; j++) {
+      printf("Checking if %c == %c\n", haystack[i + j], needle[j]);
       if (haystack[i + j] != needle[j]) {
         match = false;
         break;
@@ -164,73 +179,159 @@ static const uint8_t CMD_SET[] = {'S', 'E', 'T'};
 static const uint8_t CMD_DEL[] = {'D', 'E', 'L'};
 static const uint8_t CMD_QUIT[] = {'Q', 'U', 'I', 'T'};
 
-bool try_handle_request(Conn *conn) {
-  // TODO: add a processed offset here instead of memmove?
-  const char *crlf =
-      strnstr((const char *)conn->recv_buf, "\r\n", conn->recv_buf_size);
-  if (crlf == NULL) {
-    return false;
-  }
+static const uint8_t CRLF[] = {'\r', '\n'};
+static const uint8_t SPACE[] = {' '};
 
-  size_t len = crlf - (char *)conn->recv_buf;
+static const uint8_t RESPONSE_OK[] = {'O', 'K', '\r', '\n', '\0'};
+static const uint8_t RESPONSE_ERROR[] = {'E', 'R', 'R', 'O', 'R', '\r', '\n', '\0'};
+static const uint8_t RESPONSE_NOT_FOUND[] = {'N', 'O', 'T', '_', 'F', 'O', 'U', 'N', 'D', '\r', '\n', '\0'};
+static const uint8_t RESPONSE_DELETED[] = {'D', 'E', 'L', 'E', 'T', 'E', 'D', '\r', '\n', '\0'};
+static const uint8_t RESPONSE_PONG[] = {'P', 'O', 'N', 'G', '\r', '\n', '\0'};
+static const uint8_t RESPONSE_END[] = {'E', 'N', 'D', '\r', '\n', '\0'};
 
-  if (strstarts(conn->recv_buf, CMD_ECHO, sizeof(CMD_ECHO))) {
-    size_t echolen = len - sizeof(CMD_ECHO) + 1;
-    memcpy(conn->send_buf, &conn->recv_buf[sizeof(CMD_ECHO) + 1], echolen);
-    conn->send_buf_size = echolen;
-  } else if (strstarts(conn->recv_buf, CMD_PING, sizeof(CMD_PING))) {
-    static const char *PONG = "PONG\r\n";
-    memcpy(conn->send_buf, PONG, sizeof(&PONG));
-    conn->send_buf_size = sizeof(&PONG) - 1;
-  } else if (strstarts(conn->recv_buf, CMD_GET, sizeof(CMD_GET))) {
-    const char *args = (const char *)&conn->recv_buf[sizeof(CMD_GET) + 1];
-    const size_t keylen = crlf - args;
-    char *key = malloc(keylen + 1);
-    memcpy(key, args, keylen);
-    key[keylen] = '\0';
-    printf("keylen=%zu key=%s\n", keylen, key);
-  } else if (strstarts(conn->recv_buf, CMD_SET, sizeof(CMD_SET))) {
-    const char *args = (const char *)&conn->recv_buf[sizeof(CMD_SET) + 1];
-    const char *arg_delim = strnstr(args, " ", len - sizeof(CMD_SET) - 1);
-    if (!arg_delim) {
-      static const char *ERROR = "ERROR\r\n";
-      memcpy(conn->send_buf, ERROR, sizeof(&ERROR));
-      conn->send_buf_size = sizeof(&ERROR) - 1;
-    } else {
-      const size_t keylen = arg_delim - args;
-      char *key = malloc(keylen + 1);
-      memcpy(key, args, keylen);
-      key[keylen] = '\0';
-      const size_t vallen = crlf - arg_delim - 1;
-      char *val = malloc(vallen + 1);
-      memcpy(val, arg_delim + 1, vallen);
-      val[vallen] = '\0';
-      printf("keylen=%zu key=%s vallen=%zu val=%s\n", keylen, key, vallen, val);
+// arbitrary chosen max argc
+
+
+CmdArgs* parse_inline_request(Conn *conn) {
+  CmdArgs *args = malloc(sizeof(CmdArgs));
+  args->argc = 0;
+
+  size_t offset = 0;
+  size_t len = 0;
+  bool in_arg = false;
+  bool crlf = false;
+  for (size_t i = 0; i < conn->recv_buf_size; i++) {
+    if (conn->recv_buf[i] == ' ') {
+      if (in_arg) {
+        args->offsets[args->argc] = offset;
+        args->lens[args->argc] = len;
+        args->argc++;
+        in_arg = false;
+      }
+    } else if (conn->recv_buf[i] == '\r') {
+      if (in_arg) {
+        args->offsets[args->argc] = offset;
+        args->lens[args->argc] = len;
+        args->argc++;
+        in_arg = false;
+      }
+      crlf = true;
+    } else if (conn->recv_buf[i] == '\n') {
+      if (!crlf) {
+        goto bail;
+      }
+      crlf = false;
+      break;
     }
-  } else if (strstarts(conn->recv_buf, CMD_DEL, sizeof(CMD_DEL))) {
-    const char *args = (const char *)&conn->recv_buf[sizeof(CMD_DEL) + 1];
-    const size_t keylen = crlf - args;
-    char *key = malloc(keylen + 1);
-    memcpy(key, args, keylen);
-    key[keylen] = '\0';
-    printf("keylen=%zu key=%s\n", keylen, key);
-  } else if (strstarts(conn->recv_buf, CMD_QUIT, sizeof(CMD_QUIT))) {
-    conn->state = END;
-    return false;
+    else {
+      if (!in_arg) {
+        if (args->argc == MAX_ARGC) {
+          goto bail;
+        }
+        offset = i;
+        len = 0;
+        in_arg = true;
+      }
+      len++;
+    }
+  }
+
+  if (in_arg) {
+    args->offsets[args->argc] = offset;
+    args->lens[args->argc] = len;
+    args->argc++;
+  }
+
+  return args;
+
+bail:
+  free(args);
+  return NULL;
+}
+
+void handle_command(Conn *conn, CmdArgs *args) {
+  const uint8_t *cmd = &conn->recv_buf[args->offsets[0]];
+  const size_t cmdlen = args->lens[0];
+
+  if (strnstr(cmd, CMD_ECHO, cmdlen, sizeof(CMD_ECHO))) {
+    const uint8_t *echo = &conn->recv_buf[args->offsets[1]];
+    const size_t echolen = args->lens[1];
+    memcpy(conn->send_buf, echo, echolen);
+    memcpy(&conn->send_buf[echolen], CRLF, sizeof(CRLF));
+    conn->send_buf[echolen + 2] = '\0';
+    conn->send_buf_size = echolen + 2;
+  }
+  else if (strnstr(cmd, CMD_PING, cmdlen, sizeof(CMD_PING))) {
+    memcpy(conn->send_buf, RESPONSE_PONG, sizeof(RESPONSE_PONG));
+    conn->send_buf_size = sizeof(RESPONSE_PONG); 
+  }
+  else if (strnstr(cmd, CMD_GET, cmdlen, sizeof(CMD_GET))) {
+    const uint8_t *key = &conn->recv_buf[args->offsets[1]];
+    const size_t keylen = args->lens[1];
+
+    Entry *entry = (Entry*)hashmap_get(state, &(Entry){.key = (void*)args, .keylen = keylen});
+    if (entry) {
+      memcpy(conn->send_buf, entry->val, entry->vallen);
+      memcpy(&conn->send_buf[entry->vallen], CRLF, sizeof(CRLF));
+      conn->send_buf[entry->vallen + 2] = '\0';
+      conn->send_buf_size = entry->vallen + 2; 
+    } else {
+      memcpy(conn->send_buf, RESPONSE_NOT_FOUND, sizeof(RESPONSE_NOT_FOUND));
+      conn->send_buf_size = sizeof(RESPONSE_NOT_FOUND);
+    }
+  }
+  else if (strnstr(cmd, CMD_SET, cmdlen, sizeof(CMD_SET))) {
+    const size_t keylen = args->lens[1];
+    const uint8_t *key = (uint8_t*)malloc(keylen);
+    memcpy(key, &conn->recv_buf[args->offsets[1]], keylen);
+
+    const size_t vallen = args->lens[2];
+    const uint8_t *val = (uint8_t*)malloc(vallen);
+    memcpy(val, &conn->recv_buf[args->offsets[2]], vallen);
+
+    Entry *entry = &(Entry){.key = key, .keylen = keylen, .val = val, .vallen = vallen};
+    hashmap_set(state, entry);
+    memcpy(conn->send_buf, RESPONSE_OK, sizeof(RESPONSE_OK));
+    conn->send_buf_size = sizeof(RESPONSE_OK);
+  }
+  else if (strnstr(cmd, CMD_DEL, cmdlen, sizeof(CMD_DEL))) {
+    const uint8_t *key = &conn->recv_buf[args->offsets[1]];
+    const size_t keylen = args->lens[1];
+    hashmap_delete(state, &(Entry){.key = (void*)key, .keylen = keylen});
+    memcpy(conn->send_buf, RESPONSE_DELETED, sizeof(RESPONSE_DELETED));
+    conn->send_buf_size = sizeof(RESPONSE_DELETED);
   } else {
-    // invalid command
+    memcpy(conn->send_buf, RESPONSE_ERROR, sizeof(RESPONSE_ERROR));
+    conn->send_buf_size = sizeof(RESPONSE_ERROR);
   }
+}
 
-  // remove the request from the buffer.
-  // note: frequent memmove is inefficient.
-  // note: need better handling for production code.
-  if (conn->recv_buf_size < (len + 2)) {
+bool try_handle_request(Conn *conn) {
+  if (conn->recv_buf_size < 1) {
     return false;
   }
 
-  size_t remaining = conn->recv_buf_size - len - 2;
+  bool result = false;
+  CmdArgs *args = NULL;
+  if (conn->recv_buf[0] == '*') {
+    assert(0);
+  } else {
+    args = parse_inline_request(conn);
+    if (!args) {
+      goto bail;
+    }
+  }
+
+  handle_command(conn, args);
+
+  size_t total_len = args->offsets[args->argc - 1] + args->lens[args->argc - 1];
+  if (conn->recv_buf_size < (total_len + 2)) {
+    goto bail;  
+  }
+
+  size_t remaining = conn->recv_buf_size - total_len - 2;
   if (remaining) {
-    memmove(conn->recv_buf, &conn->recv_buf[len + 2], remaining);
+    memmove(conn->recv_buf, &conn->recv_buf[total_len + 2], remaining);
   }
 
   conn->recv_buf_size = remaining;
@@ -238,7 +339,14 @@ bool try_handle_request(Conn *conn) {
   conn->state = RESPONSE;
   state_response(conn);
 
-  return (conn->state == REQUEST);
+  result = (conn->state == REQUEST);
+  
+bail:
+  if (args) {
+    free(args);
+  }
+
+  return result;
 }
 
 bool try_fill_buffer(Conn *conn) {
@@ -304,7 +412,33 @@ void conn_done(vector_Conn_ptr *conns, Conn *conn) {
   free(conn);
 }
 
+int entry_compare(const void *a, const void *b, void *udata) {
+  const Entry *ea = a;
+  const Entry *eb = b;
+  if (ea->keylen != eb->keylen) {
+    return ea->keylen - eb->keylen;
+  }
+  return memcmp(ea->key, eb->key, ea->keylen);
+}
+
+uint64_t entry_hash(const void *a, uint64_t seed0, uint64_t seed1) {
+  const Entry *ea = a;
+  uint64_t hash = 0;
+  for (size_t i = 0; i < ea->keylen; i++) {
+    hash = hash * 31 + ea->key[i];
+  }
+  return hash;
+}
+
+void entry_free(void *a) {
+  Entry *ea = a;
+  free(ea->key);
+  free(ea->val);
+}
+
 int main() {
+  state = hashmap_new(sizeof(Entry), 0, 0, 0, entry_hash, entry_compare, NULL, NULL);
+
   vector_Conn_ptr conns;
   init_vector_Conn_ptr(&conns, 128);
 
@@ -378,7 +512,7 @@ int main() {
         continue;
       }
 
-      if (now_us - conn->idle_start > 5000000) {
+      if (now_us - conn->idle_start > 60000000) {
         conn_done(&conns, conn);
       }
     }
