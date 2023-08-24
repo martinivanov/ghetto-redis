@@ -148,15 +148,17 @@ void state_response(Conn *conn) {
 
 const uint8_t *strnstr(const uint8_t *haystack, const uint8_t *needle, size_t haystack_len, size_t needle_len) {
   if (needle_len == 0) {
-    printf("Needle len is 0\n");
     return haystack;
+  }
+
+  if (haystack_len < needle_len) {
+    return NULL;
   }
 
   size_t search_limit = haystack_len - needle_len + 1;
   for (size_t i = 0; i < search_limit; i++) {
     bool match = true;
     for (size_t j = 0; j < needle_len; j++) {
-      printf("Checking if %c == %c\n", haystack[i + j], needle[j]);
       if (haystack[i + j] != needle[j]) {
         match = false;
         break;
@@ -329,10 +331,14 @@ void handle_command(Conn *conn, CmdArgs *args) {
   else if (strnstr(cmd, CMD_DEL, cmdlen, sizeof(CMD_DEL))) {
     const uint8_t *key = &conn->recv_buf[args->offsets[1]];
     const size_t keylen = args->lens[1];
-    hashmap_delete(state, &(Entry){.key = (void*)key, .keylen = keylen});
-    write_integer(conn, 1);
+    if (hashmap_delete(state, &(Entry){.key = (void*)key, .keylen = keylen})) {
+      write_integer(conn, 1);
+    } else {
+      write_integer(conn, 0);
+    }
   } else {
-    write_integer(conn, 0);
+    //TODO: should add the command name here
+    write_simple_generic_error(conn, "unknown command");
   }
 }
 
@@ -352,6 +358,15 @@ bool try_handle_request(Conn *conn) {
     }
   }
 
+  // dump command
+  for (size_t i = 0; i < args->argc; i++) {
+    printf("Arg %zu: ", i);
+    for (size_t j = 0; j < args->lens[i]; j++) {
+      printf("%c", conn->recv_buf[args->offsets[i] + j]);
+    }
+    printf("\n");
+  }
+
   handle_command(conn, args);
 
   if (conn->recv_buf_size < (args->len + 2)) {
@@ -359,8 +374,6 @@ bool try_handle_request(Conn *conn) {
   }
 
   size_t remaining = conn->recv_buf_size - args->len - 2;
-  printf("conn->recv_buf_size: %zu args->len: %zu\n", conn->recv_buf_size, args->len);
-  printf("Remaining: %zu\n", remaining);
   if (remaining) {
     memmove(conn->recv_buf, &conn->recv_buf[args->len + 2], remaining);
   }
