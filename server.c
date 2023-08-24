@@ -27,13 +27,13 @@
 static struct hashmap *state = NULL;
 
 typedef struct {
-  uint8_t *key;
-  size_t keylen;
-  uint8_t *val;
-  size_t vallen;
+  const uint8_t *key;
+  const size_t keylen;
+  const uint8_t *val;
+  const size_t vallen;
 } Entry;
 
-const size_t MAX_ARGC = 8;
+#define MAX_ARGC 8
 
 typedef struct {
   size_t argc;
@@ -306,7 +306,7 @@ void handle_command(Conn *conn, CmdArgs *args) {
     const uint8_t *key = &conn->recv_buf[args->offsets[1]];
     const size_t keylen = args->lens[1];
 
-    Entry *entry = (Entry*)hashmap_get(state, &(Entry){.key = args, .keylen = keylen});
+    Entry *entry = (Entry*)hashmap_get(state, &(Entry){.key = key, .keylen = keylen});
     if (entry) {
       write_bulk_string(conn, entry->val, entry->vallen);
     } else {
@@ -463,8 +463,8 @@ uint64_t entry_hash(const void *a, uint64_t seed0, uint64_t seed1) {
 
 void entry_free(void *a) {
   Entry *ea = a;
-  free(ea->key);
-  free(ea->val);
+  free((void *)ea->key);
+  free((void *)ea->val);
 }
 
 int main() {
