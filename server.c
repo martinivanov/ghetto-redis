@@ -110,9 +110,11 @@ int32_t accept_new_conn(vector_Conn_ptr *conns, int fd) {
 }
 
 bool try_flush_buffer(Conn *conn) {
+  printf("try_flush_buffer\n");
   ssize_t rv = 0;
   do {
     size_t remaining = conn->send_buf_size - conn->send_buf_sent;
+    printf("remaining: %zu\n", remaining);
     rv = write(conn->fd, &conn->send_buf[conn->send_buf_sent], remaining);
   } while (rv < 0 && errno == EINTR);
 
@@ -192,8 +194,45 @@ static const uint8_t RESPONSE_DELETED[] = {'D', 'E', 'L', 'E', 'T', 'E', 'D', '\
 static const uint8_t RESPONSE_PONG[] = {'P', 'O', 'N', 'G', '\r', '\n'};
 static const uint8_t RESPONSE_END[] = {'E', 'N', 'D', '\r', '\n'};
 
-// arbitrary chosen max argc
 
+CmdArgs* parse_resp_request(Conn *conn) {
+  CmdArgs *args = malloc(sizeof(CmdArgs));
+  args->argc = 0;
+
+  uint8_t *buf = conn->recv_buf;
+  buf++;
+  while(*buf != '\r') {
+    args->argc = args->len * 10 + (*buf - '0');
+    buf++;
+  }
+
+  buf += 2;
+  for (size_t i = 0; i < args->argc; i++) {
+    if (*buf == '$') {
+      buf++;
+      size_t arglen = 0;
+      while(*buf != '\r') {
+        // TODO: validate that we are reading a number
+        arglen = arglen * 10 + (*buf - '0');
+        buf++;
+      }
+      args->lens[i] = arglen;
+      buf += 2;
+      args->offsets[i] = buf - conn->recv_buf;
+      buf += arglen + 2;
+    } else {
+      goto bail;
+    }
+  }
+
+  args->len = buf - conn->recv_buf;
+  
+  return args;
+
+bail:
+  free(args);
+  return NULL;
+}
 
 CmdArgs* parse_inline_request(Conn *conn) {
   CmdArgs *args = malloc(sizeof(CmdArgs));
@@ -213,7 +252,6 @@ CmdArgs* parse_inline_request(Conn *conn) {
         args->argc++;
         in_arg = false;
       }
-      args->len++;
     } else if (conn->recv_buf[i] == '\r') {
       if (in_arg) {
         args->offsets[args->argc] = offset;
@@ -239,7 +277,6 @@ CmdArgs* parse_inline_request(Conn *conn) {
         in_arg = true;
       }
       len++;
-      args->len++;
     }
   }
 
@@ -248,6 +285,8 @@ CmdArgs* parse_inline_request(Conn *conn) {
     args->lens[args->argc] = len;
     args->argc++;
   }
+
+  args->len = offset + len + 2;
 
   return args;
 
@@ -264,8 +303,15 @@ void write_simple_generic_error(Conn *conn, const char *msg) {
   write_simple_error(conn, "ERR", msg);
 }
 
-void write_simple_string(Conn *conn, const char *msg) {
-  conn->send_buf_size = sprintf((char*)&conn->send_buf, "+%s\r\n", msg);
+void write_simple_string(Conn *conn, const char *msg, size_t len) {
+  uint8_t *buf = conn->send_buf;
+  buf[0] = '+';
+  buf++;
+  memcpy(buf, msg, len);
+  buf += len;
+  memcpy(buf, CRLF, sizeof(CRLF));
+  buf += 2;
+  conn->send_buf_size = buf - conn->send_buf;
 }
 
 void write_bulk_string(Conn *conn, const uint8_t *data, size_t len) {
@@ -302,7 +348,7 @@ void handle_command(Conn *conn, CmdArgs *args) {
     }
   }
   else if (strnstr(cmd, CMD_PING, cmdlen, sizeof(CMD_PING))) {
-    write_simple_string(conn, "PONG");
+    write_simple_string(conn, "PONG", 4);
   }
   else if (strnstr(cmd, CMD_GET, cmdlen, sizeof(CMD_GET))) {
     const uint8_t *key = &conn->recv_buf[args->offsets[1]];
@@ -326,7 +372,7 @@ void handle_command(Conn *conn, CmdArgs *args) {
 
     Entry *entry = &(Entry){.key = key, .keylen = keylen, .val = val, .vallen = vallen};
     hashmap_set(state, entry);
-    write_simple_string(conn, "OK");
+    write_simple_string(conn, "OK", 2);
   }
   else if (strnstr(cmd, CMD_DEL, cmdlen, sizeof(CMD_DEL))) {
     const uint8_t *key = &conn->recv_buf[args->offsets[1]];
@@ -337,8 +383,11 @@ void handle_command(Conn *conn, CmdArgs *args) {
       write_integer(conn, 0);
     }
   } else {
-    //TODO: should add the command name here
-    write_simple_generic_error(conn, "unknown command");
+    char message[64];
+    char *first_arg = args->argc > 1 ? (char*)&conn->recv_buf[args->offsets[1]] : "";
+    size_t first_arg_len = args->argc > 1 ? args->lens[1] : 0;
+    snprintf(message, sizeof(message), "unknown command '%.*s', with args beginning with: '%.*s'", (int)cmdlen, cmd, (int)first_arg_len, first_arg);
+    write_simple_generic_error(conn, message);
   }
 }
 
@@ -350,15 +399,15 @@ bool try_handle_request(Conn *conn) {
   bool result = false;
   CmdArgs *args = NULL;
   if (conn->recv_buf[0] == '*') {
-    assert(0);
+    args = parse_resp_request(conn);
   } else {
     args = parse_inline_request(conn);
-    if (!args) {
-      goto bail;
-    }
   }
 
-  // dump command
+  if (!args) {
+    goto bail;
+  }
+
   for (size_t i = 0; i < args->argc; i++) {
     printf("Arg %zu: ", i);
     for (size_t j = 0; j < args->lens[i]; j++) {
@@ -369,13 +418,13 @@ bool try_handle_request(Conn *conn) {
 
   handle_command(conn, args);
 
-  if (conn->recv_buf_size < (args->len + 2)) {
+  if (conn->recv_buf_size < (args->len)) {
     goto bail;  
   }
 
-  size_t remaining = conn->recv_buf_size - args->len - 2;
+  size_t remaining = conn->recv_buf_size - args->len;
   if (remaining) {
-    memmove(conn->recv_buf, &conn->recv_buf[args->len + 2], remaining);
+    memmove(conn->recv_buf, &conn->recv_buf[args->len], remaining);
   }
 
   conn->recv_buf_size = remaining;
