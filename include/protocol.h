@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define MESSAGE_MAX_LENGTH 1024
+#define MESSAGE_MAX_LENGTH 8192
 
 enum State {
     REQUEST = 0,

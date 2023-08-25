@@ -93,7 +93,6 @@ int32_t accept_new_conn(vector_Conn_ptr *conns, int fd) {
 
   fd_set_nb(client_fd);
   Conn *client = (Conn *)malloc(sizeof(Conn));
-  printf("malloc(%zu) = %p\n", sizeof(Conn), client);
   memset(client, 0, sizeof(*client));
   if (!client) {
     close(client_fd);
@@ -555,7 +554,7 @@ int main() {
   state = hashmap_new(sizeof(Entry), 10000000, 0, 0, entry_hash, entry_compare, NULL, NULL);
 
   vector_Conn_ptr conns;
-  init_vector_Conn_ptr(&conns, 16384);
+  init_vector_Conn_ptr(&conns, 128);
 
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   int val = 1;

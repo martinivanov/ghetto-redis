@@ -80,7 +80,7 @@
   size_t size_vector_##T##_ptr(vector_##T##_ptr *a) { return a->size; }        \
                                                                                \
   void resize_vector_##T##_ptr(vector_##T##_ptr *a, size_t new_size) {         \
-    T **new_arr = (T **)realloc(a->array, a->size * sizeof(T *));              \
+    T **new_arr = (T **)realloc(a->array, new_size * sizeof(T *));              \
     if (!new_arr) {                                                            \
       panic("couldn't resize");                                                \
     }                                                                          \
