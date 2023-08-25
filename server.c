@@ -61,7 +61,10 @@ static void fd_set_nb(int fd) {
 }
 
 void conn_put(vector_Conn_ptr *conns, Conn *conn) {
-  if (size_vector_Conn_ptr(conns) <= (size_t)conn->fd) {
+  size_t size = size_vector_Conn_ptr(conns);
+  printf("conn_put(%d)\n", conn->fd);
+  printf("size_vector_Conn_ptr(conns) = %zu\n", size);
+  if (size <= (size_t)conn->fd) {
     resize_vector_Conn_ptr(conns, conn->fd + 1);
   }
 
@@ -90,6 +93,7 @@ int32_t accept_new_conn(vector_Conn_ptr *conns, int fd) {
 
   fd_set_nb(client_fd);
   Conn *client = (Conn *)malloc(sizeof(Conn));
+  printf("malloc(%zu) = %p\n", sizeof(Conn), client);
   memset(client, 0, sizeof(*client));
   if (!client) {
     close(client_fd);
@@ -110,11 +114,9 @@ int32_t accept_new_conn(vector_Conn_ptr *conns, int fd) {
 }
 
 bool try_flush_buffer(Conn *conn) {
-  printf("try_flush_buffer\n");
   ssize_t rv = 0;
   do {
     size_t remaining = conn->send_buf_size - conn->send_buf_sent;
-    printf("remaining: %zu\n", remaining);
     rv = write(conn->fd, &conn->send_buf[conn->send_buf_sent], remaining);
   } while (rv < 0 && errno == EINTR);
 
@@ -197,6 +199,7 @@ static const uint8_t RESPONSE_END[] = {'E', 'N', 'D', '\r', '\n'};
 
 CmdArgs* parse_resp_request(Conn *conn) {
   CmdArgs *args = malloc(sizeof(CmdArgs));
+  //memset(args, 0, sizeof(CmdArgs));
   args->argc = 0;
 
   uint8_t *buf = conn->recv_buf;
@@ -381,7 +384,15 @@ void handle_command(Conn *conn, CmdArgs *args) {
   else if (strnstr(cmd, CMD_DEL, cmdlen, sizeof(CMD_DEL))) {
     const uint8_t *key = &conn->recv_buf[args->offsets[1]];
     const size_t keylen = args->lens[1];
-    if (hashmap_delete(state, &(Entry){.key = (void*)key, .keylen = keylen})) {
+
+    Entry *entry = hashmap_delete(state, &(Entry){.key = (void*)key, .keylen = keylen});
+    if (entry) {
+      if (entry->val) {
+        free((void *)entry->val);
+      }
+      free((void *)entry->key);
+      free(entry);
+
       write_integer(conn, 1);
     } else {
       write_integer(conn, 0);
@@ -412,13 +423,13 @@ bool try_handle_request(Conn *conn) {
     goto bail;
   }
 
-  for (size_t i = 0; i < args->argc; i++) {
-    printf("Arg %zu: ", i);
-    for (size_t j = 0; j < args->lens[i]; j++) {
-      printf("%c", conn->recv_buf[args->offsets[i] + j]);
-    }
-    printf("\n");
-  }
+ // for (size_t i = 0; i < args->argc; i++) {
+ //   printf("Arg %zu: ", i);
+ //   for (size_t j = 0; j < args->lens[i]; j++) {
+ //     printf("%c", conn->recv_buf[args->offsets[i] + j]);
+ //   }
+ //   printf("\n");
+ // }
 
   if (args->argc > 0) {
     handle_command(conn, args);
@@ -427,6 +438,7 @@ bool try_handle_request(Conn *conn) {
   if (conn->state == END) {
     goto bail;
   }
+
 
   if (conn->recv_buf_size < (args->len)) {
     goto bail;  
@@ -540,10 +552,10 @@ void entry_free(void *a) {
 }
 
 int main() {
-  state = hashmap_new(sizeof(Entry), 0, 0, 0, entry_hash, entry_compare, NULL, NULL);
+  state = hashmap_new(sizeof(Entry), 10000000, 0, 0, entry_hash, entry_compare, NULL, NULL);
 
   vector_Conn_ptr conns;
-  init_vector_Conn_ptr(&conns, 128);
+  init_vector_Conn_ptr(&conns, 16384);
 
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   int val = 1;
@@ -600,7 +612,7 @@ int main() {
       pollfd pfd = poll_args.array[i];
       if (pfd.revents) {
         Conn *conn = conns.array[pfd.fd];
-        printf("handling connection %d\n", pfd.fd);
+        //printf("handling connection %d\n", pfd.fd);
         handle_connection(conn);
         if (conn->state == END) {
           conn_done(&conns, conn);

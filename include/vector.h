@@ -77,7 +77,7 @@
     a->size = initialSize;                                                     \
   }                                                                            \
                                                                                \
-  size_t size_vector_##T##_ptr(vector_##T##_ptr *a) { return a->used; }        \
+  size_t size_vector_##T##_ptr(vector_##T##_ptr *a) { return a->size; }        \
                                                                                \
   void resize_vector_##T##_ptr(vector_##T##_ptr *a, size_t new_size) {         \
     T **new_arr = (T **)realloc(a->array, a->size * sizeof(T *));              \
