@@ -244,7 +244,8 @@ CmdArgs* parse_inline_request(Conn *conn) {
   size_t len = 0;
   bool in_arg = false;
   bool crlf = false;
-  for (size_t i = 0; i < conn->recv_buf_size; i++) {
+  size_t i = 0;
+  for (i = 0; i < conn->recv_buf_size; i++) {
     if (conn->recv_buf[i] == ' ') {
       if (in_arg) {
         args->offsets[args->argc] = offset;
@@ -286,7 +287,7 @@ CmdArgs* parse_inline_request(Conn *conn) {
     args->argc++;
   }
 
-  args->len = offset + len + 2;
+  args->len = i + 1;
 
   return args;
 
@@ -419,7 +420,9 @@ bool try_handle_request(Conn *conn) {
     printf("\n");
   }
 
-  handle_command(conn, args);
+  if (args->argc > 0) {
+    handle_command(conn, args);
+  }
 
   if (conn->state == END) {
     goto bail;
