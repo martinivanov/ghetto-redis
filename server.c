@@ -350,6 +350,9 @@ void handle_command(Conn *conn, CmdArgs *args) {
   else if (strnstr(cmd, CMD_PING, cmdlen, sizeof(CMD_PING))) {
     write_simple_string(conn, "PONG", 4);
   }
+  else if (strnstr(cmd, CMD_QUIT, cmdlen, sizeof(CMD_QUIT))) {
+    conn->state = END;
+  }
   else if (strnstr(cmd, CMD_GET, cmdlen, sizeof(CMD_GET))) {
     const uint8_t *key = &conn->recv_buf[args->offsets[1]];
     const size_t keylen = args->lens[1];
@@ -417,6 +420,10 @@ bool try_handle_request(Conn *conn) {
   }
 
   handle_command(conn, args);
+
+  if (conn->state == END) {
+    goto bail;
+  }
 
   if (conn->recv_buf_size < (args->len)) {
     goto bail;  
