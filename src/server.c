@@ -42,8 +42,8 @@ typedef struct {
 typedef struct {
   size_t argc;
   size_t len;
-  uint8_t offsets[MAX_ARGC];
-  uint8_t lens[MAX_ARGC];
+  size_t offsets[MAX_ARGC];
+  size_t lens[MAX_ARGC];
 } CmdArgs;
 
 static void fd_set_nb(int fd) {
