@@ -24,6 +24,9 @@
 
 #include "include/hashmap.h"
 
+#define unlikely(expr) __builtin_expect(!!(expr), 0)
+#define likely(expr) __builtin_expect(!!(expr), 1)
+
 static struct hashmap *state = NULL;
 static bool running = true;
 
@@ -193,32 +196,40 @@ static const uint8_t CMD_SHUTDOWN[] = {'S', 'H', 'U', 'T', 'D', 'O', 'W', 'N'};
 
 static const uint8_t CRLF[] = {'\r', '\n'};
 
+
+size_t parse_number(uint8_t **buf) {
+  size_t result = 0;
+  uint8_t *p = *buf;
+  while (*p != '\r') {
+    if (unlikely(*p < (uint8_t)'0' || *p > (uint8_t)'9')) {
+      return (size_t)-1;
+    }
+
+    result = result * 10 + (*p - (uint8_t)'0');
+    p++;
+  }
+
+  // skip over CRLF
+  p += sizeof(CRLF);
+  *buf = p;
+
+  return result;
+}
+
 CmdArgs *parse_resp_request(Conn *conn) {
   CmdArgs *args = malloc(sizeof(CmdArgs));
-  // memset(args, 0, sizeof(CmdArgs));
-  args->argc = 0;
 
   uint8_t *buf = conn->recv_buf;
   buf++;
-  while (*buf != '\r') {
-    args->argc = args->len * 10 + (*buf - '0');
-    buf++;
-  }
+  args->argc = parse_number(&buf);
 
-  buf += 2;
   for (size_t i = 0; i < args->argc; i++) {
     if (*buf == '$') {
       buf++;
-      size_t arglen = 0;
-      while (*buf != '\r') {
-        // TODO: validate that we are reading a number
-        arglen = arglen * 10 + (*buf - '0');
-        buf++;
-      }
+      size_t arglen = parse_number(&buf);
       args->lens[i] = arglen;
-      buf += 2;
       args->offsets[i] = buf - conn->recv_buf;
-      buf += arglen + 2;
+      buf += arglen + sizeof(CRLF);
     } else {
       goto bail;
     }
