@@ -26,7 +26,13 @@ profile:
 	$(MAKE) BUILD=profile build
 
 run: build
-	./$TARGET
+	./$(TARGET)
+
+run-release: release
+	./$(TARGET)
+
+run-release-numa: release
+	numactl --all --physcpubind=9 --localalloc ./$(TARGET)
 
 clean:
 	rm -rf $(TARGET)

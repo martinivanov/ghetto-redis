@@ -627,9 +627,9 @@ int main() {
   printf("listening\n");
 
   int nfds = 0;
-  struct epoll_event events[1024];
+  struct epoll_event events[128];
   while (running) {
-    nfds = epoll_wait(fd_epoll, events, 1024, -1);
+    nfds = epoll_wait(fd_epoll, events, 128, -1);
     if (nfds == -1) {
       perror("epoll_wait()");
       exit(1);
@@ -643,24 +643,14 @@ int main() {
         }
         epoll_register(fd_epoll, fd, EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLHUP);
       } else {
-        Conn *conn = conns.array[events[i].data.fd];
+        struct epoll_event ev = events[i];
+        int fd = ev.data.fd;
+        Conn *conn = conns.array[fd];
         handle_connection(conn);
-        if (conn->state == END) {
+        if (conn->state == END || ev.events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
           printf("closing fd=%d\n", conn->fd);
-         epoll_unregister(fd_epoll, events[i].data.fd);
-         conn_done(&conns, conn);
-        }
-      }
-
-      if (events[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
-        Conn *conn = conns.array[events[i].data.fd];
-        if (conn) {
-          printf("unregistering fd=%d\n", conn->fd);
-          conn->state = END;
-          epoll_unregister(fd_epoll, events[i].data.fd);
+          epoll_unregister(fd_epoll, fd);
           conn_done(&conns, conn);
-        } else {
-          printf("unregistering fd=%d missing connection???\n", events[i].data.fd);
         }
       }
     }
