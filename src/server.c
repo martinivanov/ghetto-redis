@@ -66,10 +66,16 @@ void conn_put(vector_Conn_ptr *conns, Conn *conn) {
     resize_vector_Conn_ptr(conns, conn->fd + 1);
   }
 
+  size_t new_capacity = capacity_vector_Conn_ptr(conns);
+  for (size_t i = capacity; i < new_capacity; i++) {
+    conns->array[i] = NULL;
+  }
+
   conns->array[conn->fd] = conn;
   // TODO: fix this - move it inside the vector logic or replace the vector with
   // a proper map
   conns->used = conns->size;
+
 }
 
 static uint64_t get_monotonic_usec() {
@@ -551,6 +557,9 @@ int main() {
 
   vector_Conn_ptr conns;
   init_vector_Conn_ptr(&conns, 128);
+  for (size_t i = 0; i < capacity_vector_Conn_ptr(&conns); i++) {
+    conns.array[i] = NULL;
+  }
 
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   int val = 1;
@@ -580,21 +589,23 @@ int main() {
     // printf("Polling\n");
     clear_vector_pollfd(&poll_args);
 
-    struct pollfd pfd = {fd, POLLIN, 0};
-    insert_vector_pollfd(&poll_args, pfd);
+    struct pollfd pfd_listener = {fd, POLLIN, 0};
+    insert_vector_pollfd(&poll_args, pfd_listener);
     for (size_t i = 0; i < size_vector_Conn_ptr(&conns); i++) {
       Conn *conn = conns.array[i];
-      if (!conn) {
+      if (conn == NULL) {
         continue;
       }
 
-      struct pollfd pfd = {
-          .fd = conn->fd,
+       int fd = conn->fd;
+
+      struct pollfd pfd_conn = {
+          .fd = fd,
           .events = (conn->state == REQUEST) ? POLLIN : POLLOUT,
       };
 
-      pfd.events |= POLLERR;
-      insert_vector_pollfd(&poll_args, pfd);
+      pfd_conn.events |= POLLERR;
+      insert_vector_pollfd(&poll_args, pfd_conn);
     }
 
     int rv =
