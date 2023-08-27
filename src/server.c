@@ -579,9 +579,9 @@ int main() {
     conns.array[i] = NULL;
   }
 
-  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  int fd_listener = socket(AF_INET, SOCK_STREAM, 0);
   int val = 1;
-  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
+  setsockopt(fd_listener, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
 
   struct sockaddr_in addr = {
       .sin_family = AF_INET,
@@ -589,17 +589,17 @@ int main() {
       .sin_addr.s_addr = ntohl(0),
   };
 
-  int rv = bind(fd, (struct sockaddr *)&addr, sizeof(addr));
+  int rv = bind(fd_listener, (struct sockaddr *)&addr, sizeof(addr));
   if (rv) {
     panic("bind()");
   }
 
-  rv = listen(fd, SOMAXCONN);
+  rv = listen(fd_listener, SOMAXCONN);
   if (rv) {
     panic("listen()");
   }
 
-  fd_set_nb(fd);
+  fd_set_nb(fd_listener);
 
   vector_pollfd poll_args;
   init_vector_pollfd(&poll_args, 32);
@@ -607,7 +607,7 @@ int main() {
     // printf("Polling\n");
     clear_vector_pollfd(&poll_args);
 
-    struct pollfd pfd_listener = {fd, POLLIN, 0};
+    struct pollfd pfd_listener = {fd_listener, POLLIN, 0};
     insert_vector_pollfd(&poll_args, pfd_listener);
     for (size_t i = 0; i < size_vector_Conn_ptr(&conns); i++) {
       Conn *conn = conns.array[i];
@@ -615,10 +615,8 @@ int main() {
         continue;
       }
 
-       int fd = conn->fd;
-
       struct pollfd pfd_conn = {
-          .fd = fd,
+          .fd = conn->fd,
           .events = (conn->state == REQUEST) ? POLLIN : POLLOUT,
       };
 
@@ -657,7 +655,7 @@ int main() {
     }
 
     if (poll_args.array[0].revents) {
-      accept_new_conn(&conns, fd);
+      accept_new_conn(&conns, fd_listener);
     }
   }
 
