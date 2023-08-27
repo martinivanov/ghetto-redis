@@ -447,13 +447,13 @@ void handle_command(Conn *conn, CmdArgs *args) {
 }
 
 bool try_handle_request(Conn *conn) {
-  if (conn->recv_buf_size < 1) {
+  if (unlikely(conn->recv_buf_size < 1)) {
     return false;
   }
 
   bool result = false;
   CmdArgs *args = NULL;
-  if (conn->recv_buf[0] == '*') {
+  if (likely(conn->recv_buf[0] == '*')) {
     args = parse_resp_request(conn);
   } else {
     args = parse_inline_request(conn);
@@ -472,15 +472,15 @@ bool try_handle_request(Conn *conn) {
   //   printf("\n");
   // }
 
-  if (args->argc > 0) {
+  if (likely(args->argc > 0)) {
     handle_command(conn, args);
   }
 
-  if (conn->state == END) {
+  if (unlikely(conn->state == END)) {
     goto bail;
   }
 
-  if (conn->recv_buf_size < (args->len)) {
+  if (unlikely(conn->recv_buf_size < (args->len))) {
     goto bail;
   }
 
