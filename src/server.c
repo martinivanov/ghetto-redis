@@ -11,7 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/poll.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <time.h>
@@ -116,7 +116,7 @@ int32_t accept_new_conn(vector_Conn_ptr *conns, int fd) {
 
   conn_put(conns, client);
 
-  return 0;
+  return client_fd;
 }
 
 bool try_flush_buffer(Conn *conn) {
@@ -567,7 +567,25 @@ void conn_done(vector_Conn_ptr *conns, Conn *conn) {
   free(conn);
 }
 
+void epoll_register(int fd_epoll, int fd, uint32_t events) {
+	struct epoll_event ev;
+	ev.events = events;
+	ev.data.fd = fd;
+	if (epoll_ctl(fd_epoll, EPOLL_CTL_ADD, fd, &ev) == -1) {
+		perror("epoll_ctl()\n");
+		exit(1);
+	}
+}
 
+void epoll_unregister(int fd_epoll, int fd) {
+  struct epoll_event ev;
+  ev.events = 0;
+  ev.data.fd = fd;
+  if (epoll_ctl(fd_epoll, EPOLL_CTL_DEL, fd, &ev) == -1) {
+    perror("epoll_ctl()\n");
+    exit(1);
+  }
+}
 
 int main() {
   state = hashmap_new(sizeof(Entry), 0, 0, 0, entry_hash, entry_compare, entry_free,
@@ -601,63 +619,66 @@ int main() {
 
   fd_set_nb(fd_listener);
 
-  vector_pollfd poll_args;
-  init_vector_pollfd(&poll_args, 32);
+  printf("fd_listener=%d\n", fd_listener);
+
+  int fd_epoll = epoll_create(1);
+  printf("fd_epoll=%d\n", fd_epoll);
+  epoll_register(fd_epoll, fd_listener, EPOLLIN);
+  printf("listening\n");
+
+  int nfds = 0;
+  struct epoll_event events[1024];
   while (running) {
-    // printf("Polling\n");
-    clear_vector_pollfd(&poll_args);
-
-    struct pollfd pfd_listener = {fd_listener, POLLIN, 0};
-    insert_vector_pollfd(&poll_args, pfd_listener);
-    for (size_t i = 0; i < size_vector_Conn_ptr(&conns); i++) {
-      Conn *conn = conns.array[i];
-      if (conn == NULL) {
-        continue;
-      }
-
-      struct pollfd pfd_conn = {
-          .fd = conn->fd,
-          .events = (conn->state == REQUEST) ? POLLIN : POLLOUT,
-      };
-
-      pfd_conn.events |= POLLERR;
-      insert_vector_pollfd(&poll_args, pfd_conn);
+    nfds = epoll_wait(fd_epoll, events, 1024, -1);
+    if (nfds == -1) {
+      perror("epoll_wait()");
+      exit(1);
     }
 
-    int rv =
-        poll(poll_args.array, (nfds_t)size_vector_pollfd(&poll_args), 1000);
-    if (rv < 0) {
-      panic("poll");
-    }
-
-    for (size_t i = 1; i < size_vector_pollfd(&poll_args); i++) {
-      pollfd pfd = poll_args.array[i];
-      if (pfd.revents) {
-        Conn *conn = conns.array[pfd.fd];
-        // printf("handling connection %d\n", pfd.fd);
+    for (int i = 0; i < nfds; i++) {
+      if (events[i].data.fd == fd_listener) {
+        int fd = accept_new_conn(&conns, fd_listener);
+        if (fd < 0) {
+          panic("accept_new_conn()");
+        }
+        epoll_register(fd_epoll, fd, EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLHUP);
+      } else {
+        Conn *conn = conns.array[events[i].data.fd];
         handle_connection(conn);
         if (conn->state == END) {
+          printf("closing fd=%d\n", conn->fd);
+         epoll_unregister(fd_epoll, events[i].data.fd);
+         conn_done(&conns, conn);
+        }
+      }
+
+      if (events[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+        Conn *conn = conns.array[events[i].data.fd];
+        if (conn) {
+          printf("unregistering fd=%d\n", conn->fd);
+          conn->state = END;
+          epoll_unregister(fd_epoll, events[i].data.fd);
           conn_done(&conns, conn);
+        } else {
+          printf("unregistering fd=%d missing connection???\n", events[i].data.fd);
         }
       }
     }
 
-    uint64_t now_us = get_monotonic_usec();
-    for (size_t i = 0; i < size_vector_Conn_ptr(&conns); i++) {
-      Conn *conn = conns.array[i];
-      if (!conn) {
-        continue;
-      }
+    // uint64_t now_us = get_monotonic_usec();
+    // for (size_t i = 0; i < size_vector_Conn_ptr(&conns); i++) {
+    //   Conn *conn = conns.array[i];
+    //   if (!conn) {
+    //     continue;
+    //   }
 
-      if (now_us - conn->idle_start > 60000000) {
-        conn_done(&conns, conn);
-      }
-    }
-
-    if (poll_args.array[0].revents) {
-      accept_new_conn(&conns, fd_listener);
-    }
+    //   if (now_us - conn->idle_start > 60000000) {
+    //     conn_done(&conns, conn);
+    //   }
+    // }
   }
+
+  close(fd_listener);
 
   return 0;
 }
