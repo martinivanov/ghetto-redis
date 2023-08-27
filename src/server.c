@@ -25,6 +25,7 @@
 #include "include/hashmap.h"
 
 static struct hashmap *state = NULL;
+static bool running = true;
 
 typedef struct {
   const uint8_t *key;
@@ -75,7 +76,6 @@ void conn_put(vector_Conn_ptr *conns, Conn *conn) {
   // TODO: fix this - move it inside the vector logic or replace the vector with
   // a proper map
   conns->used = conns->size;
-
 }
 
 static uint64_t get_monotonic_usec() {
@@ -189,6 +189,7 @@ static const uint8_t CMD_GET[] = {'G', 'E', 'T'};
 static const uint8_t CMD_SET[] = {'S', 'E', 'T'};
 static const uint8_t CMD_DEL[] = {'D', 'E', 'L'};
 static const uint8_t CMD_QUIT[] = {'Q', 'U', 'I', 'T'};
+static const uint8_t CMD_SHUTDOWN[] = {'S', 'H', 'U', 'T', 'D', 'O', 'W', 'N'};
 
 static const uint8_t CRLF[] = {'\r', '\n'};
 
@@ -390,6 +391,8 @@ void handle_command(Conn *conn, CmdArgs *args) {
     } else {
       write_integer(conn, 0);
     }
+  } else if (strnstr(cmd, CMD_SHUTDOWN, cmdlen, sizeof(CMD_SHUTDOWN))) {
+    running = false;
   } else {
     char message[64];
     char *first_arg =
@@ -585,7 +588,7 @@ int main() {
 
   vector_pollfd poll_args;
   init_vector_pollfd(&poll_args, 32);
-  while (true) {
+  while (running) {
     // printf("Polling\n");
     clear_vector_pollfd(&poll_args);
 
