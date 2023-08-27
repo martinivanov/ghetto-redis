@@ -42,7 +42,6 @@ typedef struct {
   uint8_t lens[MAX_ARGC];
 } CmdArgs;
 
-
 static void fd_set_nb(int fd) {
   errno = 0;
   int flags = fcntl(fd, F_GETFL, 0);
@@ -148,7 +147,8 @@ void state_response(Conn *conn) {
   }
 }
 
-const uint8_t *strnstr(const uint8_t *haystack, const uint8_t *needle, size_t haystack_len, size_t needle_len) {
+const uint8_t *strnstr(const uint8_t *haystack, const uint8_t *needle,
+                       size_t haystack_len, size_t needle_len) {
   if (needle_len == 0) {
     return haystack;
   }
@@ -186,14 +186,14 @@ static const uint8_t CMD_QUIT[] = {'Q', 'U', 'I', 'T'};
 
 static const uint8_t CRLF[] = {'\r', '\n'};
 
-CmdArgs* parse_resp_request(Conn *conn) {
+CmdArgs *parse_resp_request(Conn *conn) {
   CmdArgs *args = malloc(sizeof(CmdArgs));
-  //memset(args, 0, sizeof(CmdArgs));
+  // memset(args, 0, sizeof(CmdArgs));
   args->argc = 0;
 
   uint8_t *buf = conn->recv_buf;
   buf++;
-  while(*buf != '\r') {
+  while (*buf != '\r') {
     args->argc = args->len * 10 + (*buf - '0');
     buf++;
   }
@@ -203,7 +203,7 @@ CmdArgs* parse_resp_request(Conn *conn) {
     if (*buf == '$') {
       buf++;
       size_t arglen = 0;
-      while(*buf != '\r') {
+      while (*buf != '\r') {
         // TODO: validate that we are reading a number
         arglen = arglen * 10 + (*buf - '0');
         buf++;
@@ -218,7 +218,7 @@ CmdArgs* parse_resp_request(Conn *conn) {
   }
 
   args->len = buf - conn->recv_buf;
-  
+
   return args;
 
 bail:
@@ -226,7 +226,7 @@ bail:
   return NULL;
 }
 
-CmdArgs* parse_inline_request(Conn *conn) {
+CmdArgs *parse_inline_request(Conn *conn) {
   CmdArgs *args = malloc(sizeof(CmdArgs));
   args->argc = 0;
   args->len = 0;
@@ -258,8 +258,7 @@ CmdArgs* parse_inline_request(Conn *conn) {
       }
       crlf = false;
       break;
-    }
-    else {
+    } else {
       if (!in_arg) {
         if (args->argc == MAX_ARGC) {
           goto bail;
@@ -288,7 +287,8 @@ bail:
 }
 
 void write_simple_error(Conn *conn, const char *prefix, const char *msg) {
-  conn->send_buf_size = sprintf((char*)&conn->send_buf, "-%s %s\r\n", prefix, msg);
+  conn->send_buf_size =
+      sprintf((char *)&conn->send_buf, "-%s %s\r\n", prefix, msg);
 }
 
 void write_simple_generic_error(Conn *conn, const char *msg) {
@@ -308,7 +308,7 @@ void write_simple_string(Conn *conn, const char *msg, size_t len) {
 
 void write_bulk_string(Conn *conn, const uint8_t *data, size_t len) {
   size_t written = 0;
-  written += (size_t)sprintf((char*)&conn->send_buf[written], "$%zu", len);
+  written += (size_t)sprintf((char *)&conn->send_buf[written], "$%zu", len);
   memcpy(&conn->send_buf[written], CRLF, sizeof(CRLF));
   written += 2;
   memcpy(&conn->send_buf[written], data, len);
@@ -319,11 +319,11 @@ void write_bulk_string(Conn *conn, const uint8_t *data, size_t len) {
 }
 
 void write_null_bulk_string(Conn *conn) {
-  conn->send_buf_size = sprintf((char*)&conn->send_buf, "$-1\r\n");
+  conn->send_buf_size = sprintf((char *)&conn->send_buf, "$-1\r\n");
 }
 
 void write_integer(Conn *conn, int64_t val) {
-  conn->send_buf_size = sprintf((char*)&conn->send_buf, ":%ld\r\n", val);
+  conn->send_buf_size = sprintf((char *)&conn->send_buf, ":%ld\r\n", val);
 }
 
 void handle_command(Conn *conn, CmdArgs *args) {
@@ -336,44 +336,43 @@ void handle_command(Conn *conn, CmdArgs *args) {
       const size_t echolen = args->lens[1];
       write_bulk_string(conn, echo, echolen);
     } else {
-      write_simple_generic_error(conn, "wrong number of arguments for 'echo' command");
+      write_simple_generic_error(
+          conn, "wrong number of arguments for 'echo' command");
     }
-  }
-  else if (strnstr(cmd, CMD_PING, cmdlen, sizeof(CMD_PING))) {
+  } else if (strnstr(cmd, CMD_PING, cmdlen, sizeof(CMD_PING))) {
     write_simple_string(conn, "PONG", 4);
-  }
-  else if (strnstr(cmd, CMD_QUIT, cmdlen, sizeof(CMD_QUIT))) {
+  } else if (strnstr(cmd, CMD_QUIT, cmdlen, sizeof(CMD_QUIT))) {
     conn->state = END;
-  }
-  else if (strnstr(cmd, CMD_GET, cmdlen, sizeof(CMD_GET))) {
+  } else if (strnstr(cmd, CMD_GET, cmdlen, sizeof(CMD_GET))) {
     const uint8_t *key = &conn->recv_buf[args->offsets[1]];
     const size_t keylen = args->lens[1];
 
-    Entry *entry = (Entry*)hashmap_get(state, &(Entry){.key = key, .keylen = keylen});
+    Entry *entry =
+        (Entry *)hashmap_get(state, &(Entry){.key = key, .keylen = keylen});
     if (entry) {
       write_bulk_string(conn, entry->val, entry->vallen);
     } else {
       write_null_bulk_string(conn);
     }
-  }
-  else if (strnstr(cmd, CMD_SET, cmdlen, sizeof(CMD_SET))) {
+  } else if (strnstr(cmd, CMD_SET, cmdlen, sizeof(CMD_SET))) {
     const size_t keylen = args->lens[1];
-    const uint8_t *key = (uint8_t*)malloc(keylen);
+    const uint8_t *key = (uint8_t *)malloc(keylen);
     memcpy((void *)key, &conn->recv_buf[args->offsets[1]], keylen);
 
     const size_t vallen = args->lens[2];
-    const uint8_t *val = (uint8_t*)malloc(vallen);
+    const uint8_t *val = (uint8_t *)malloc(vallen);
     memcpy((void *)val, &conn->recv_buf[args->offsets[2]], vallen);
 
-    Entry *entry = &(Entry){.key = key, .keylen = keylen, .val = val, .vallen = vallen};
+    Entry *entry =
+        &(Entry){.key = key, .keylen = keylen, .val = val, .vallen = vallen};
     hashmap_set(state, entry);
     write_simple_string(conn, "OK", 2);
-  }
-  else if (strnstr(cmd, CMD_DEL, cmdlen, sizeof(CMD_DEL))) {
+  } else if (strnstr(cmd, CMD_DEL, cmdlen, sizeof(CMD_DEL))) {
     const uint8_t *key = &conn->recv_buf[args->offsets[1]];
     const size_t keylen = args->lens[1];
 
-    Entry *entry = (Entry *)hashmap_delete(state, &(Entry){.key = (void*)key, .keylen = keylen});
+    Entry *entry = (Entry *)hashmap_delete(
+        state, &(Entry){.key = (void *)key, .keylen = keylen});
     if (entry) {
       if (entry->val) {
         free((void *)entry->val);
@@ -387,9 +386,12 @@ void handle_command(Conn *conn, CmdArgs *args) {
     }
   } else {
     char message[64];
-    char *first_arg = args->argc > 1 ? (char*)&conn->recv_buf[args->offsets[1]] : "";
+    char *first_arg =
+        args->argc > 1 ? (char *)&conn->recv_buf[args->offsets[1]] : "";
     size_t first_arg_len = args->argc > 1 ? args->lens[1] : 0;
-    snprintf(message, sizeof(message), "unknown command '%.*s', with args beginning with: '%.*s'", (int)cmdlen, cmd, (int)first_arg_len, first_arg);
+    snprintf(message, sizeof(message),
+             "unknown command '%.*s', with args beginning with: '%.*s'",
+             (int)cmdlen, cmd, (int)first_arg_len, first_arg);
     write_simple_generic_error(conn, message);
   }
 }
@@ -411,13 +413,13 @@ bool try_handle_request(Conn *conn) {
     goto bail;
   }
 
- // for (size_t i = 0; i < args->argc; i++) {
- //   printf("Arg %zu: ", i);
- //   for (size_t j = 0; j < args->lens[i]; j++) {
- //     printf("%c", conn->recv_buf[args->offsets[i] + j]);
- //   }
- //   printf("\n");
- // }
+  // for (size_t i = 0; i < args->argc; i++) {
+  //   printf("Arg %zu: ", i);
+  //   for (size_t j = 0; j < args->lens[i]; j++) {
+  //     printf("%c", conn->recv_buf[args->offsets[i] + j]);
+  //   }
+  //   printf("\n");
+  // }
 
   if (args->argc > 0) {
     handle_command(conn, args);
@@ -427,9 +429,8 @@ bool try_handle_request(Conn *conn) {
     goto bail;
   }
 
-
   if (conn->recv_buf_size < (args->len)) {
-    goto bail;  
+    goto bail;
   }
 
   size_t remaining = conn->recv_buf_size - args->len;
@@ -443,7 +444,7 @@ bool try_handle_request(Conn *conn) {
   state_response(conn);
 
   result = (conn->state == REQUEST);
-  
+
 bail:
   if (args) {
     free(args);
@@ -545,7 +546,8 @@ void entry_free(void *a) {
 }
 
 int main() {
-  state = hashmap_new(sizeof(Entry), 0, 0, 0, entry_hash, entry_compare, NULL, NULL);
+  state = hashmap_new(sizeof(Entry), 0, 0, 0, entry_hash, entry_compare, NULL,
+                      NULL);
 
   vector_Conn_ptr conns;
   init_vector_Conn_ptr(&conns, 128);
@@ -605,7 +607,7 @@ int main() {
       pollfd pfd = poll_args.array[i];
       if (pfd.revents) {
         Conn *conn = conns.array[pfd.fd];
-        //printf("handling connection %d\n", pfd.fd);
+        // printf("handling connection %d\n", pfd.fd);
         handle_connection(conn);
         if (conn->state == END) {
           conn_done(&conns, conn);
