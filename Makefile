@@ -1,16 +1,32 @@
 CC = clang
-LDFLAGS = 
-CFLAGS = -g -Wall -Iinclude
 
-build-server:
-	$(CC) $(CLFAGS) -o server server.c include/logging.c include/protocol.c include/hashmap.c $(LDFLAGS)
+TARGET = "server"
 
-build-client:
-	$(CC) $(CLFAGS) -o client client.c include/logging.c include/protocol.c $(LDFLAGS)
+BUILD = debug
 
-build: build-server #build-client
+CFLAGS.release = -Ofast -march=native -flto
+CFLAGS.debug = -O0 -ggdb -DDEBUG -fsanitize=address
+CFLAGS.profile = -O0 -g -pg
+CFLAGS=-Wall -Wextra -Wno-gnu -pthread -std=gnu2x ${CFLAGS.${BUILD}}
 
-all: clean build
+SOURCES=$(wildcard src/*.c) $(wildcard src/**/*.c) $(wildcard src/include/**/*.c)
+
+BUILD_CMD = $(CC) $(CFLAGS) -o $(TARGET) $(SOURCES)
+
+build:
+	$(BUILD_CMD)
+
+release:
+	$(MAKE) BUILD=release build
+
+debug:
+	$(MAKE) BUILD=debug build
+
+profile:
+	$(MAKE) BUILD=profile build
+
+run: build
+	./$TARGET
 
 clean:
-	rm client server
+	rm -rf $(TARGET)
