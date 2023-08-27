@@ -193,9 +193,42 @@ static const uint8_t CMD_SET[] = {'S', 'E', 'T'};
 static const uint8_t CMD_DEL[] = {'D', 'E', 'L'};
 static const uint8_t CMD_QUIT[] = {'Q', 'U', 'I', 'T'};
 static const uint8_t CMD_SHUTDOWN[] = {'S', 'H', 'U', 'T', 'D', 'O', 'W', 'N'};
+static const uint8_t CMD_FLUSHALL[] = {'F', 'L', 'U', 'S', 'H', 'A', 'L', 'L'};
 
 static const uint8_t CRLF[] = {'\r', '\n'};
 
+int entry_compare(const void *a, const void *b, void *udata) {
+  (void)(udata);
+
+  const Entry *ea = a;
+  const Entry *eb = b;
+  if (ea->keylen != eb->keylen) {
+    return ea->keylen - eb->keylen;
+  }
+  return memcmp(ea->key, eb->key, ea->keylen);
+}
+
+uint64_t entry_hash(const void *a, uint64_t seed0, uint64_t seed1) {
+  (void)(seed0);
+  (void)(seed1);
+
+  const Entry *ea = a;
+  uint64_t hash = 0;
+  for (size_t i = 0; i < ea->keylen; i++) {
+    hash = hash * 31 + ea->key[i];
+  }
+  return hash;
+}
+
+void entry_free(void *a) {
+  Entry *ea = a;
+  if (ea->key) {
+    free((void *)ea->key);
+  }
+  if (ea->val) {
+    free((void *)ea->val);
+  }
+}
 
 size_t parse_number(uint8_t **buf) {
   size_t result = 0;
@@ -389,21 +422,18 @@ void handle_command(Conn *conn, CmdArgs *args) {
     const uint8_t *key = &conn->recv_buf[args->offsets[1]];
     const size_t keylen = args->lens[1];
 
-    Entry *entry = (Entry *)hashmap_delete(
-        state, &(Entry){.key = (void *)key, .keylen = keylen});
+    const void *entry = hashmap_delete(state, &(Entry){.key = (void *)key, .keylen = keylen});
     if (entry) {
-      if (entry->val) {
-        free((void *)entry->val);
-      }
-      free((void *)entry->key);
-      free(entry);
-
+      entry_free((void*)entry);
       write_integer(conn, 1);
     } else {
       write_integer(conn, 0);
     }
   } else if (strnstr(cmd, CMD_SHUTDOWN, cmdlen, sizeof(CMD_SHUTDOWN))) {
     running = false;
+  } else if (strnstr(cmd, CMD_FLUSHALL, cmdlen, sizeof(CMD_FLUSHALL))) {
+    hashmap_clear(state, true);
+    write_simple_string(conn, "OK", 2);
   } else {
     char message[64];
     char *first_arg =
@@ -537,37 +567,10 @@ void conn_done(vector_Conn_ptr *conns, Conn *conn) {
   free(conn);
 }
 
-int entry_compare(const void *a, const void *b, void *udata) {
-  (void)(udata);
 
-  const Entry *ea = a;
-  const Entry *eb = b;
-  if (ea->keylen != eb->keylen) {
-    return ea->keylen - eb->keylen;
-  }
-  return memcmp(ea->key, eb->key, ea->keylen);
-}
-
-uint64_t entry_hash(const void *a, uint64_t seed0, uint64_t seed1) {
-  (void)(seed0);
-  (void)(seed1);
-
-  const Entry *ea = a;
-  uint64_t hash = 0;
-  for (size_t i = 0; i < ea->keylen; i++) {
-    hash = hash * 31 + ea->key[i];
-  }
-  return hash;
-}
-
-void entry_free(void *a) {
-  Entry *ea = a;
-  free((void *)ea->key);
-  free((void *)ea->val);
-}
 
 int main() {
-  state = hashmap_new(sizeof(Entry), 0, 0, 0, entry_hash, entry_compare, NULL,
+  state = hashmap_new(sizeof(Entry), 0, 0, 0, entry_hash, entry_compare, entry_free,
                       NULL);
 
   vector_Conn_ptr conns;
