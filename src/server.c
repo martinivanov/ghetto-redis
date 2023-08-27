@@ -185,15 +185,6 @@ static const uint8_t CMD_DEL[] = {'D', 'E', 'L'};
 static const uint8_t CMD_QUIT[] = {'Q', 'U', 'I', 'T'};
 
 static const uint8_t CRLF[] = {'\r', '\n'};
-static const uint8_t SPACE[] = {' '};
-
-static const uint8_t RESPONSE_OK[] = {'O', 'K', '\r', '\n'};
-static const uint8_t RESPONSE_ERROR[] = {'E', 'R', 'R', 'O', 'R', '\r', '\n'};
-static const uint8_t RESPONSE_NOT_FOUND[] = {'N', 'O', 'T', '_', 'F', 'O', 'U', 'N', 'D', '\r', '\n'};
-static const uint8_t RESPONSE_DELETED[] = {'D', 'E', 'L', 'E', 'T', 'E', 'D', '\r', '\n'};
-static const uint8_t RESPONSE_PONG[] = {'P', 'O', 'N', 'G', '\r', '\n'};
-static const uint8_t RESPONSE_END[] = {'E', 'N', 'D', '\r', '\n'};
-
 
 CmdArgs* parse_resp_request(Conn *conn) {
   CmdArgs *args = malloc(sizeof(CmdArgs));
@@ -241,7 +232,6 @@ CmdArgs* parse_inline_request(Conn *conn) {
   args->len = 0;
 
   size_t offset = 0;
-  size_t total_len = 0;
   size_t len = 0;
   bool in_arg = false;
   bool crlf = false;
@@ -383,7 +373,7 @@ void handle_command(Conn *conn, CmdArgs *args) {
     const uint8_t *key = &conn->recv_buf[args->offsets[1]];
     const size_t keylen = args->lens[1];
 
-    Entry *entry = hashmap_delete(state, &(Entry){.key = (void*)key, .keylen = keylen});
+    Entry *entry = (Entry *)hashmap_delete(state, &(Entry){.key = (void*)key, .keylen = keylen});
     if (entry) {
       if (entry->val) {
         free((void *)entry->val);
@@ -526,6 +516,8 @@ void conn_done(vector_Conn_ptr *conns, Conn *conn) {
 }
 
 int entry_compare(const void *a, const void *b, void *udata) {
+  (void)(udata);
+
   const Entry *ea = a;
   const Entry *eb = b;
   if (ea->keylen != eb->keylen) {
@@ -535,6 +527,9 @@ int entry_compare(const void *a, const void *b, void *udata) {
 }
 
 uint64_t entry_hash(const void *a, uint64_t seed0, uint64_t seed1) {
+  (void)(seed0);
+  (void)(seed1);
+
   const Entry *ea = a;
   uint64_t hash = 0;
   for (size_t i = 0; i < ea->keylen; i++) {
@@ -585,8 +580,7 @@ int main() {
 
     struct pollfd pfd = {fd, POLLIN, 0};
     insert_vector_pollfd(&poll_args, pfd);
-    size_t size = size_vector_Conn_ptr(&conns);
-    for (int i = 0; i < size_vector_Conn_ptr(&conns); i++) {
+    for (size_t i = 0; i < size_vector_Conn_ptr(&conns); i++) {
       Conn *conn = conns.array[i];
       if (!conn) {
         continue;
@@ -620,7 +614,7 @@ int main() {
     }
 
     uint64_t now_us = get_monotonic_usec();
-    for (int i = 0; i < size_vector_Conn_ptr(&conns); i++) {
+    for (size_t i = 0; i < size_vector_Conn_ptr(&conns); i++) {
       Conn *conn = conns.array[i];
       if (!conn) {
         continue;
