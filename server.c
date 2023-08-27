@@ -551,7 +551,7 @@ void entry_free(void *a) {
 }
 
 int main() {
-  state = hashmap_new(sizeof(Entry), 10000000, 0, 0, entry_hash, entry_compare, NULL, NULL);
+  state = hashmap_new(sizeof(Entry), 0, 0, 0, entry_hash, entry_compare, NULL, NULL);
 
   vector_Conn_ptr conns;
   init_vector_Conn_ptr(&conns, 128);
