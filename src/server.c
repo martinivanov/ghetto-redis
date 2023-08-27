@@ -429,7 +429,8 @@ bool try_handle_request(Conn *conn) {
     args = parse_inline_request(conn);
   }
 
-  if (!args) {
+  if (unlikely(!args)) {
+    conn->state = END;
     goto bail;
   }
 
