@@ -61,10 +61,9 @@ static void fd_set_nb(int fd) {
 }
 
 void conn_put(vector_Conn_ptr *conns, Conn *conn) {
-  size_t size = size_vector_Conn_ptr(conns);
+  size_t capacity = capacity_vector_Conn_ptr(conns);
   printf("conn_put(%d)\n", conn->fd);
-  printf("size_vector_Conn_ptr(conns) = %zu\n", size);
-  if (size <= (size_t)conn->fd) {
+  if (capacity <= (size_t)conn->fd) {
     resize_vector_Conn_ptr(conns, conn->fd + 1);
   }
 
@@ -586,6 +585,7 @@ int main() {
 
     struct pollfd pfd = {fd, POLLIN, 0};
     insert_vector_pollfd(&poll_args, pfd);
+    size_t size = size_vector_Conn_ptr(&conns);
     for (int i = 0; i < size_vector_Conn_ptr(&conns); i++) {
       Conn *conn = conns.array[i];
       if (!conn) {

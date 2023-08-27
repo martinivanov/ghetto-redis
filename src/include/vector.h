@@ -18,10 +18,12 @@
     a->size = initialSize;                                                     \
   }                                                                            \
                                                                                \
+  size_t capacity_vector_##T(vector_##T *a) { return a->size; }                \
+                                                                               \
   size_t size_vector_##T(vector_##T *a) { return a->used; }                    \
                                                                                \
   void resize_vector_##T(vector_##T *a, size_t new_size) {                     \
-    T *new_arr = (T *)realloc(a->array, a->size * sizeof(T));                 \
+    T *new_arr = (T *)realloc(a->array, new_size * sizeof(T));                 \
     if (!new_arr) {                                                            \
       panic("couldn't resize");                                                \
     }                                                                          \
@@ -38,7 +40,7 @@
   }                                                                            \
                                                                                \
   void remove_vector_##T(vector_##T *a, T element, bool (*pred)(T, T)) {       \
-    int i, j;                                                                  \
+    size_t i, j;                                                               \
     for (i = 0; i < a->used; i++) {                                            \
       if (pred(a->array[i], element)) {                                        \
         for (j = i; j < a->used - 1; j++) {                                    \
@@ -51,7 +53,7 @@
   }                                                                            \
                                                                                \
   void foreach_vector_##T(vector_##T *a, void (*func)(T)) {                    \
-    for (int i = 0; i < a->used; i++) {                                        \
+    for (size_t i = 0; i < a->used; i++) {                                     \
       func(a->array[i]);                                                       \
     }                                                                          \
   }                                                                            \
@@ -77,10 +79,12 @@
     a->size = initialSize;                                                     \
   }                                                                            \
                                                                                \
-  size_t size_vector_##T##_ptr(vector_##T##_ptr *a) { return a->size; }        \
+  size_t capacity_vector_##T##_ptr(vector_##T##_ptr *a) { return a->size; }    \
+                                                                               \
+  size_t size_vector_##T##_ptr(vector_##T##_ptr *a) { return a->used; }        \
                                                                                \
   void resize_vector_##T##_ptr(vector_##T##_ptr *a, size_t new_size) {         \
-    T **new_arr = (T **)realloc(a->array, new_size * sizeof(T *));              \
+    T **new_arr = (T **)realloc(a->array, new_size * sizeof(T *));             \
     if (!new_arr) {                                                            \
       panic("couldn't resize");                                                \
     }                                                                          \
@@ -98,7 +102,7 @@
                                                                                \
   void remove_vector_##T##_ptr(vector_##T##_ptr *a, T *element,                \
                                bool (*pred)(T *, T *)) {                       \
-    int i, j;                                                                  \
+    size_t i, j;                                                               \
     for (i = 0; i < a->used; i++) {                                            \
       if (pred(a->array[i], element)) {                                        \
         for (j = i; j < a->used - 1; j++) {                                    \
@@ -111,7 +115,7 @@
   }                                                                            \
                                                                                \
   void foreach_vector_##T##_ptr(vector_##T##_ptr *a, void (*func)(T *)) {      \
-    for (int i = 0; i < a->used; i++) {                                        \
+    for (size_t i = 0; i < a->used; i++) {                                     \
       func(a->array[i]);                                                       \
     }                                                                          \
   }                                                                            \
