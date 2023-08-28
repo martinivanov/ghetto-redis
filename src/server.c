@@ -127,6 +127,7 @@ bool try_flush_buffer(Conn *conn) {
   } while (rv < 0 && errno == EINTR);
 
   if (rv < 0 && errno == EAGAIN) {
+    conn->state |= BLOCKED;
     return false;
   }
 
@@ -511,6 +512,7 @@ bool try_fill_buffer(Conn *conn) {
   do {
     size_t cap = sizeof(conn->recv_buf) - conn->recv_buf_size;
     rv = read(conn->fd, &conn->recv_buf[conn->recv_buf_size], cap);
+    //printf("read() rv=%ld\n", rv);
   } while (rv < 0 && errno == EINTR);
 
   if (rv < 0 && errno == EAGAIN) {
@@ -587,8 +589,18 @@ void epoll_unregister(int fd_epoll, int fd) {
   }
 }
 
+void epoll_modify(int fd_epoll, int fd, uint32_t events) {
+  struct epoll_event ev;
+  ev.events = events;
+  ev.data.fd = fd;
+  if (epoll_ctl(fd_epoll, EPOLL_CTL_MOD, fd, &ev) == -1) {
+    perror("epoll_ctl()\n");
+    exit(1);
+  }
+}
+
 int main() {
-  state = hashmap_new(sizeof(Entry), 0, 0, 0, entry_hash, entry_compare, entry_free,
+  state = hashmap_new(sizeof(Entry), 1 << 24, 0, 0, entry_hash, entry_compare, entry_free,
                       NULL);
 
   vector_Conn_ptr conns;
@@ -641,12 +653,24 @@ int main() {
         if (fd < 0) {
           panic("accept_new_conn()");
         }
-        epoll_register(fd_epoll, fd, EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLHUP);
+        epoll_register(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
       } else {
         struct epoll_event ev = events[i];
         int fd = ev.data.fd;
         Conn *conn = conns.array[fd];
+
         handle_connection(conn);
+
+        if (conn->state & (RESPONSE | BLOCKED)) {
+          printf("socket %d is blocked\n", fd);
+          epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
+        }
+
+        if (ev.events & EPOLLOUT) {
+          printf("socket %d was blocked and is now writable\n", fd);
+          epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
+        }
+
         if (conn->state == END || ev.events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
           printf("closing fd=%d\n", conn->fd);
           epoll_unregister(fd_epoll, fd);

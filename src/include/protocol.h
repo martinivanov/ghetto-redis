@@ -8,9 +8,10 @@
 #define MESSAGE_MAX_LENGTH 8192
 
 enum State {
-    REQUEST = 0,
-    RESPONSE = 1,
-    END = 2,
+    REQUEST = 1 << 0,
+    RESPONSE = 1 << 1,
+    BLOCKED = 1 << 2,
+    END = 1 << 31,
 };
 
 typedef struct {
