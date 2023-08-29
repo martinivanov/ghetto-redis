@@ -157,34 +157,12 @@ void state_response(Conn *conn) {
   }
 }
 
-const uint8_t *strnstr(const uint8_t *haystack, const uint8_t *needle,
-                       size_t haystack_len, size_t needle_len) {
-  if (needle_len == 0) {
-    return haystack;
+bool compare_bytes(const uint8_t *a1, const uint8_t *a2, size_t a1_len, size_t a2_len) {
+  if (a1_len != a2_len) {
+    return false;
   }
 
-  if (haystack_len < needle_len) {
-    return NULL;
-  }
-
-  size_t search_limit = haystack_len - needle_len + 1;
-  for (size_t i = 0; i < search_limit; i++) {
-    bool match = true;
-    for (size_t j = 0; j < needle_len; j++) {
-      if (haystack[i + j] != needle[j]) {
-        match = false;
-        break;
-      }
-    }
-    if (match) {
-      return haystack + i;
-    }
-  }
-  return NULL;
-}
-
-bool strstarts(const uint8_t *str, const uint8_t *prefix, size_t prefixlen) {
-  return strncmp((const char *)str, (const char *)prefix, prefixlen) == 0;
+  return memcmp(a1, a2, a1_len) == 0;
 }
 
 static const uint8_t CMD_ECHO[] = {'E', 'C', 'H', 'O'};
@@ -382,7 +360,7 @@ void handle_command(Conn *conn, CmdArgs *args) {
   const uint8_t *cmd = &conn->recv_buf[args->offsets[0]];
   const size_t cmdlen = args->lens[0];
 
-  if (strnstr(cmd, CMD_ECHO, cmdlen, sizeof(CMD_ECHO))) {
+  if (compare_bytes(cmd, CMD_ECHO, cmdlen, sizeof(CMD_ECHO))) {
     if (args->argc == 2) {
       const uint8_t *echo = &conn->recv_buf[args->offsets[1]];
       const size_t echolen = args->lens[1];
@@ -391,11 +369,11 @@ void handle_command(Conn *conn, CmdArgs *args) {
       write_simple_generic_error(
           conn, "wrong number of arguments for 'echo' command");
     }
-  } else if (strnstr(cmd, CMD_PING, cmdlen, sizeof(CMD_PING))) {
+  } else if (compare_bytes(cmd, CMD_PING, cmdlen, sizeof(CMD_PING))) {
     write_simple_string(conn, "PONG", 4);
-  } else if (strnstr(cmd, CMD_QUIT, cmdlen, sizeof(CMD_QUIT))) {
+  } else if (compare_bytes(cmd, CMD_QUIT, cmdlen, sizeof(CMD_QUIT))) {
     conn->state = END;
-  } else if (strnstr(cmd, CMD_GET, cmdlen, sizeof(CMD_GET))) {
+  } else if (compare_bytes(cmd, CMD_GET, cmdlen, sizeof(CMD_GET))) {
     const uint8_t *key = &conn->recv_buf[args->offsets[1]];
     const size_t keylen = args->lens[1];
 
@@ -406,7 +384,7 @@ void handle_command(Conn *conn, CmdArgs *args) {
     } else {
       write_null_bulk_string(conn);
     }
-  } else if (strnstr(cmd, CMD_SET, cmdlen, sizeof(CMD_SET))) {
+  } else if (compare_bytes(cmd, CMD_SET, cmdlen, sizeof(CMD_SET))) {
     const size_t keylen = args->lens[1];
     const uint8_t *key = (uint8_t *)malloc(keylen);
     memcpy((void *)key, &conn->recv_buf[args->offsets[1]], keylen);
@@ -419,7 +397,7 @@ void handle_command(Conn *conn, CmdArgs *args) {
         &(Entry){.key = key, .keylen = keylen, .val = val, .vallen = vallen};
     hashmap_set(state, entry);
     write_simple_string(conn, "OK", 2);
-  } else if (strnstr(cmd, CMD_DEL, cmdlen, sizeof(CMD_DEL))) {
+  } else if (compare_bytes(cmd, CMD_DEL, cmdlen, sizeof(CMD_DEL))) {
     const uint8_t *key = &conn->recv_buf[args->offsets[1]];
     const size_t keylen = args->lens[1];
 
@@ -430,9 +408,9 @@ void handle_command(Conn *conn, CmdArgs *args) {
     } else {
       write_integer(conn, 0);
     }
-  } else if (strnstr(cmd, CMD_SHUTDOWN, cmdlen, sizeof(CMD_SHUTDOWN))) {
+  } else if (compare_bytes(cmd, CMD_SHUTDOWN, cmdlen, sizeof(CMD_SHUTDOWN))) {
     running = false;
-  } else if (strnstr(cmd, CMD_FLUSHALL, cmdlen, sizeof(CMD_FLUSHALL))) {
+  } else if (compare_bytes(cmd, CMD_FLUSHALL, cmdlen, sizeof(CMD_FLUSHALL))) {
     hashmap_clear(state, true);
     write_simple_string(conn, "OK", 2);
   } else {
