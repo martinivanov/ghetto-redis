@@ -231,7 +231,8 @@ size_t parse_number(uint8_t **buf) {
 CmdArgs *parse_resp_request(Conn *conn) {
   CmdArgs *args = malloc(sizeof(CmdArgs));
 
-  uint8_t *buf = conn->recv_buf;
+  uint8_t *buf = conn->recv_buf + conn->recv_buf_read;
+  uint8_t *start = buf;
   buf++;
   args->argc = parse_number(&buf);
 
@@ -240,14 +241,15 @@ CmdArgs *parse_resp_request(Conn *conn) {
       buf++;
       size_t arglen = parse_number(&buf);
       args->lens[i] = arglen;
-      args->offsets[i] = buf - conn->recv_buf;
+      //args->offsets[i] = buf - conn->recv_buf + conn->recv_buf_read;
+      args->offsets[i] = buf - start;
       buf += arglen + sizeof(CRLF);
     } else {
       goto bail;
     }
   }
 
-  args->len = buf - conn->recv_buf;
+  args->len = buf - start;
 
   return args;
 
@@ -261,20 +263,21 @@ CmdArgs *parse_inline_request(Conn *conn) {
   args->argc = 0;
   args->len = 0;
 
+  uint8_t *buf = conn->recv_buf + conn->recv_buf_read;
   size_t offset = 0;
   size_t len = 0;
   bool in_arg = false;
   bool crlf = false;
   size_t i = 0;
   for (i = 0; i < conn->recv_buf_size; i++) {
-    if (conn->recv_buf[i] == ' ') {
+    if (buf[i] == ' ') {
       if (in_arg) {
         args->offsets[args->argc] = offset;
         args->lens[args->argc] = len;
         args->argc++;
         in_arg = false;
       }
-    } else if (conn->recv_buf[i] == '\r') {
+    } else if (buf[i] == '\r') {
       if (in_arg) {
         args->offsets[args->argc] = offset;
         args->lens[args->argc] = len;
@@ -282,7 +285,7 @@ CmdArgs *parse_inline_request(Conn *conn) {
         in_arg = false;
       }
       crlf = true;
-    } else if (conn->recv_buf[i] == '\n') {
+    } else if (buf[i] == '\n') {
       if (!crlf) {
         goto bail;
       }
@@ -357,12 +360,12 @@ void write_integer(Conn *conn, int64_t val) {
 }
 
 void handle_command(Conn *conn, CmdArgs *args) {
-  const uint8_t *cmd = &conn->recv_buf[args->offsets[0]];
+  const uint8_t *cmd = &conn->recv_buf[conn->recv_buf_read + args->offsets[0]];
   const size_t cmdlen = args->lens[0];
 
   if (compare_bytes(cmd, CMD_ECHO, cmdlen, sizeof(CMD_ECHO))) {
     if (args->argc == 2) {
-      const uint8_t *echo = &conn->recv_buf[args->offsets[1]];
+      const uint8_t *echo = &cmd[args->offsets[1]];
       const size_t echolen = args->lens[1];
       write_bulk_string(conn, echo, echolen);
     } else {
@@ -374,7 +377,7 @@ void handle_command(Conn *conn, CmdArgs *args) {
   } else if (compare_bytes(cmd, CMD_QUIT, cmdlen, sizeof(CMD_QUIT))) {
     conn->state = END;
   } else if (compare_bytes(cmd, CMD_GET, cmdlen, sizeof(CMD_GET))) {
-    const uint8_t *key = &conn->recv_buf[args->offsets[1]];
+    const uint8_t *key = &cmd[args->offsets[1]];
     const size_t keylen = args->lens[1];
 
     Entry *entry =
@@ -387,18 +390,18 @@ void handle_command(Conn *conn, CmdArgs *args) {
   } else if (compare_bytes(cmd, CMD_SET, cmdlen, sizeof(CMD_SET))) {
     const size_t keylen = args->lens[1];
     const uint8_t *key = (uint8_t *)malloc(keylen);
-    memcpy((void *)key, &conn->recv_buf[args->offsets[1]], keylen);
+    memcpy((void *)key, &cmd[args->offsets[1]], keylen);
 
     const size_t vallen = args->lens[2];
     const uint8_t *val = (uint8_t *)malloc(vallen);
-    memcpy((void *)val, &conn->recv_buf[args->offsets[2]], vallen);
+    memcpy((void *)val, &cmd[args->offsets[2]], vallen);
 
     Entry *entry =
         &(Entry){.key = key, .keylen = keylen, .val = val, .vallen = vallen};
     hashmap_set(state, entry);
     write_simple_string(conn, "OK", 2);
   } else if (compare_bytes(cmd, CMD_DEL, cmdlen, sizeof(CMD_DEL))) {
-    const uint8_t *key = &conn->recv_buf[args->offsets[1]];
+    const uint8_t *key = &cmd[args->offsets[1]];
     const size_t keylen = args->lens[1];
 
     const void *entry = hashmap_delete(state, &(Entry){.key = (void *)key, .keylen = keylen});
@@ -416,7 +419,7 @@ void handle_command(Conn *conn, CmdArgs *args) {
   } else {
     char message[64];
     char *first_arg =
-        args->argc > 1 ? (char *)&conn->recv_buf[args->offsets[1]] : "";
+        args->argc > 1 ? (char *)&cmd[args->offsets[1]] : "";
     size_t first_arg_len = args->argc > 1 ? args->lens[1] : 0;
     snprintf(message, sizeof(message),
              "unknown command '%.*s', with args beginning with: '%.*s'",
@@ -430,9 +433,10 @@ bool try_handle_request(Conn *conn) {
     return false;
   }
 
+  uint8_t *buf = conn->recv_buf + conn->recv_buf_read;
   bool result = false;
   CmdArgs *args = NULL;
-  if (likely(conn->recv_buf[0] == '*')) {
+  if (likely(buf[0] == '*')) {
     args = parse_resp_request(conn);
   } else {
     args = parse_inline_request(conn);
@@ -443,13 +447,15 @@ bool try_handle_request(Conn *conn) {
     goto bail;
   }
 
-  // for (size_t i = 0; i < args->argc; i++) {
-  //   printf("Arg %zu: ", i);
-  //   for (size_t j = 0; j < args->lens[i]; j++) {
-  //     printf("%c", conn->recv_buf[args->offsets[i] + j]);
-  //   }
-  //   printf("\n");
-  // }
+#ifdef DEBUG
+  for (size_t i = 0; i < args->argc; i++) {
+    printf("Arg %zu: ", i);
+    for (size_t j = 0; j < args->lens[i]; j++) {
+      printf("%c", conn->recv_buf[conn->recv_buf_read + args->offsets[i] + j]);
+    }
+    printf("\n");
+  }
+#endif
 
   if (likely(args->argc > 0)) {
     handle_command(conn, args);
@@ -463,10 +469,8 @@ bool try_handle_request(Conn *conn) {
     goto bail;
   }
 
+  conn->recv_buf_read += args->len;
   size_t remaining = conn->recv_buf_size - args->len;
-  if (remaining) {
-    memmove(conn->recv_buf, &conn->recv_buf[args->len], remaining);
-  }
 
   conn->recv_buf_size = remaining;
 
@@ -489,8 +493,14 @@ bool try_fill_buffer(Conn *conn) {
   ssize_t rv = 0;
   do {
     size_t cap = sizeof(conn->recv_buf) - conn->recv_buf_size;
+    if (conn->recv_buf_read > 0) {
+#ifdef DEBUG
+      printf("compacting buffer from %zu to %zu\n", conn->recv_buf_read, conn->recv_buf_size);
+#endif
+      memmove(conn->recv_buf, &conn->recv_buf[conn->recv_buf_read], conn->recv_buf_size);
+      conn->recv_buf_read = 0;
+    }
     rv = read(conn->fd, &conn->recv_buf[conn->recv_buf_size], cap);
-    //printf("read() rv=%ld\n", rv);
   } while (rv < 0 && errno == EINTR);
 
   if (rv < 0 && errno == EAGAIN) {

@@ -4,7 +4,7 @@ TARGET = "server"
 
 BUILD = debug
 
-CFLAGS.release = -Ofast -march=native -flto
+CFLAGS.release = -O3 -march=native -flto
 CFLAGS.debug = -O0 -ggdb -DDEBUG -fsanitize=address
 CFLAGS.profile = -O0 -g -pg
 CFLAGS=-Wall -Wextra -Wno-gnu -pthread -std=gnu2x ${CFLAGS.${BUILD}}

@@ -19,6 +19,7 @@ typedef struct {
     enum State state;
 
     size_t recv_buf_size;
+    size_t recv_buf_read;
     uint8_t recv_buf[MESSAGE_MAX_LENGTH];
 
     size_t send_buf_size;
