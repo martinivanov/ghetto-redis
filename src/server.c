@@ -228,9 +228,7 @@ size_t parse_number(uint8_t **buf) {
   return result;
 }
 
-CmdArgs *parse_resp_request(Conn *conn) {
-  CmdArgs *args = malloc(sizeof(CmdArgs));
-
+bool parse_resp_request(Conn *conn, CmdArgs *args) {
   uint8_t *buf = conn->recv_buf + conn->recv_buf_read;
   uint8_t *start = buf;
   buf++;
@@ -245,21 +243,16 @@ CmdArgs *parse_resp_request(Conn *conn) {
       args->offsets[i] = buf - start;
       buf += arglen + sizeof(CRLF);
     } else {
-      goto bail;
+      return false;
     }
   }
 
   args->len = buf - start;
 
-  return args;
-
-bail:
-  free(args);
-  return NULL;
+  return true;
 }
 
-CmdArgs *parse_inline_request(Conn *conn) {
-  CmdArgs *args = malloc(sizeof(CmdArgs));
+bool parse_inline_request(Conn *conn, CmdArgs *args) {
   args->argc = 0;
   args->len = 0;
 
@@ -287,14 +280,14 @@ CmdArgs *parse_inline_request(Conn *conn) {
       crlf = true;
     } else if (buf[i] == '\n') {
       if (!crlf) {
-        goto bail;
+        return false;
       }
       crlf = false;
       break;
     } else {
       if (!in_arg) {
         if (args->argc == MAX_ARGC) {
-          goto bail;
+          return false;
         }
         offset = i;
         len = 0;
@@ -312,11 +305,7 @@ CmdArgs *parse_inline_request(Conn *conn) {
 
   args->len = i + 1;
 
-  return args;
-
-bail:
-  free(args);
-  return NULL;
+  return true;
 }
 
 void write_simple_error(Conn *conn, const char *prefix, const char *msg) {
@@ -435,42 +424,43 @@ bool try_handle_request(Conn *conn) {
 
   uint8_t *buf = conn->recv_buf + conn->recv_buf_read;
   bool result = false;
-  CmdArgs *args = NULL;
+  CmdArgs args;
+  bool args_parsed = false;
   if (likely(buf[0] == '*')) {
-    args = parse_resp_request(conn);
+    args_parsed = parse_resp_request(conn, &args);
   } else {
-    args = parse_inline_request(conn);
+    args_parsed = parse_inline_request(conn, &args);
   }
 
-  if (unlikely(!args)) {
+  if (unlikely(!args_parsed)) {
     conn->state = END;
-    goto bail;
+    return false;
   }
 
 #ifdef DEBUG
-  for (size_t i = 0; i < args->argc; i++) {
+  for (size_t i = 0; i < args.argc; i++) {
     printf("Arg %zu: ", i);
-    for (size_t j = 0; j < args->lens[i]; j++) {
-      printf("%c", conn->recv_buf[conn->recv_buf_read + args->offsets[i] + j]);
+    for (size_t j = 0; j < args.lens[i]; j++) {
+      printf("%c", conn->recv_buf[conn->recv_buf_read + args.offsets[i] + j]);
     }
     printf("\n");
   }
 #endif
 
-  if (likely(args->argc > 0)) {
-    handle_command(conn, args);
+  if (likely(args.argc > 0)) {
+    handle_command(conn, &args);
   }
 
   if (unlikely(conn->state == END)) {
-    goto bail;
+    return false;
   }
 
-  if (unlikely(conn->recv_buf_size < (args->len))) {
-    goto bail;
+  if (unlikely(conn->recv_buf_size < (args.len))) {
+    return false;
   }
 
-  conn->recv_buf_read += args->len;
-  size_t remaining = conn->recv_buf_size - args->len;
+  conn->recv_buf_read += args.len;
+  size_t remaining = conn->recv_buf_size - args.len;
 
   conn->recv_buf_size = remaining;
 
@@ -478,11 +468,6 @@ bool try_handle_request(Conn *conn) {
   state_response(conn);
 
   result = (conn->state == REQUEST);
-
-bail:
-  if (args) {
-    free(args);
-  }
 
   return result;
 }
