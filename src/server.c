@@ -226,28 +226,40 @@ typedef enum {
   PARSE_INCOMPLETE = 2,
 } ParseError;
 
-ParseError parse_number(uint8_t **buf, size_t *result) {
+ParseError parse_number(uint8_t **cur, uint8_t *end, size_t *result) {
   size_t res = 0;
-  uint8_t *p = *buf;
+  uint8_t *p = *cur;
+  bool complete = false;
 
-  // TODO: check if we have a new line
+  while (p <= end) {
+    if (*p == '\r') {
+      complete = true;
+      break;
+    }
 
-  while (*p != '\r') {
     if (*p < (uint8_t)'0' || *p > (uint8_t)'9') {
       return PARSE_ERROR;
     }
 
-    // if (res > (SIZE_MAX - (*p - (uint8_t)'0')) / 10) {
-    //   return PARSE_ERROR;
-    // }
+    if (res > (SIZE_MAX - (*p - (uint8_t)'0')) / 10) {
+      return PARSE_ERROR;
+    }
 
     res = res * 10 + (*p - (uint8_t)'0');
     p++;
   }
 
+  if (!complete) {
+    return PARSE_INCOMPLETE;
+  }
+
+  if (p + sizeof(CRLF) > end) {
+    return PARSE_INCOMPLETE;
+  }
+
   // skip over CRLF
   p += sizeof(CRLF);
-  *buf = p;
+  *cur = p;
 
   *result = res;
 
@@ -255,34 +267,56 @@ ParseError parse_number(uint8_t **buf, size_t *result) {
 }
 
 ParseError parse_resp_request(Conn *conn, CmdArgs *args) {
-  uint8_t *buf = conn->recv_buf + conn->recv_buf_read;
-  uint8_t *start = buf;
-  buf++;
+  uint8_t *cur = conn->recv_buf + conn->recv_buf_read;
+  uint8_t *start = cur;
+  uint8_t *end = cur + conn->recv_buf_size;
 
-  ParseError err = parse_number(&buf, &args->argc);
+  if (start == end) {
+    return PARSE_INCOMPLETE;
+  }
+  
+  cur++;
+
+  ParseError err = parse_number(&cur, end, &args->argc);
   if (err != PARSE_OK) {
     return err;
   }
 
+  if (args->argc > MAX_ARGC) {
+    return PARSE_ERROR;
+  }
+
+  if (cur + sizeof(CRLF) > end) {
+    return PARSE_INCOMPLETE;
+  }
+
   for (size_t i = 0; i < args->argc; i++) {
-    if (*buf == '$') {
-      buf++;
+    if (cur == end) {
+      return PARSE_INCOMPLETE;
+    }
+
+    if (*cur == '$') {
+      cur++;
       size_t arglen = 0;
-      ParseError err = parse_number(&buf, &arglen);
+      ParseError err = parse_number(&cur, end, &arglen);
       if (err != PARSE_OK) {
         return err;
       }
 
+      if (cur + arglen + sizeof(CRLF) > end) {
+        return PARSE_INCOMPLETE;
+      }
+
       args->lens[i] = arglen;
-      args->offsets[i] = buf - start;
-      buf += arglen + sizeof(CRLF);
+      args->offsets[i] = cur - start;
+      cur += arglen + sizeof(CRLF);
     } else {
       return PARSE_ERROR;
     }
   }
 
   args->buf = start;
-  args->len = buf - start;
+  args->len = cur - start;
 
   return PARSE_OK;
 }
@@ -291,8 +325,8 @@ ParseError parse_inline_request(Conn *conn, CmdArgs *args) {
   args->argc = 0;
   args->len = 0;
 
-  uint8_t *buf = conn->recv_buf + conn->recv_buf_read;
-  args->buf = buf;
+  uint8_t *cur = conn->recv_buf + conn->recv_buf_read;
+  args->buf = cur;
   size_t offset = 0;
   size_t len = 0;
   bool complete = false;
@@ -300,14 +334,14 @@ ParseError parse_inline_request(Conn *conn, CmdArgs *args) {
   bool crlf = false;
   size_t i = 0;
   for (i = 0; i < conn->recv_buf_size; i++) {
-    if (buf[i] == ' ') {
+    if (cur[i] == ' ') {
       if (in_arg) {
         args->offsets[args->argc] = offset;
         args->lens[args->argc] = len;
         args->argc++;
         in_arg = false;
       }
-    } else if (buf[i] == '\r') {
+    } else if (cur[i] == '\r') {
       if (in_arg) {
         args->offsets[args->argc] = offset;
         args->lens[args->argc] = len;
@@ -315,7 +349,7 @@ ParseError parse_inline_request(Conn *conn, CmdArgs *args) {
         in_arg = false;
       }
       crlf = true;
-    } else if (buf[i] == '\n') {
+    } else if (cur[i] == '\n') {
       if (!crlf) {
         return PARSE_ERROR;
       }
@@ -351,8 +385,8 @@ ParseError parse_inline_request(Conn *conn, CmdArgs *args) {
 }
 
 void write_simple_error(Conn *conn, const char *prefix, const char *msg) {
-  conn->send_buf_size +=
-      sprintf((char *)&conn->send_buf, "-%s %s\r\n", prefix, msg);
+  uint8_t *buf = conn->send_buf + conn->send_buf_size;
+  conn->send_buf_size += sprintf((char *)buf, "-%s %s\r\n", prefix, msg);
 }
 
 void write_simple_generic_error(Conn *conn, const char *msg) {
@@ -378,11 +412,13 @@ void write_bulk_string(Conn *conn, const uint8_t *data, size_t len) {
 }
 
 void write_null_bulk_string(Conn *conn) {
-  conn->send_buf_size += sprintf((char *)&conn->send_buf, "$-1\r\n");
+  uint8_t *buf = conn->send_buf + conn->send_buf_size;
+  conn->send_buf_size += sprintf((char *)buf, "$-1\r\n");
 }
 
 void write_integer(Conn *conn, int64_t val) {
-  conn->send_buf_size += sprintf((char *)&conn->send_buf, ":%ld\r\n", val);
+  uint8_t *buf = conn->send_buf + conn->send_buf_size;
+  conn->send_buf_size += sprintf((char *)buf, ":%ld\r\n", val);
 }
 
 void handle_command(Conn *conn, CmdArgs *args) {
@@ -411,7 +447,7 @@ void handle_command(Conn *conn, CmdArgs *args) {
   } else if (compare_bytes(cmd, CMD_QUIT, cmdlen, sizeof(CMD_QUIT))) {
     conn->state = END;
   } else if (compare_bytes(cmd, CMD_GET, cmdlen, sizeof(CMD_GET))) {
-    const uint8_t *key = &cmd[args->offsets[1]];
+    const uint8_t *key = args->buf + args->offsets[1];
     const size_t keylen = args->lens[1];
 
     Entry *entry =
@@ -424,11 +460,11 @@ void handle_command(Conn *conn, CmdArgs *args) {
   } else if (compare_bytes(cmd, CMD_SET, cmdlen, sizeof(CMD_SET))) {
     const size_t keylen = args->lens[1];
     const uint8_t *key = (uint8_t *)malloc(keylen);
-    memcpy((void *)key, &cmd[args->offsets[1]], keylen);
+    memcpy((void *)key, args->buf + args->offsets[1], keylen);
 
     const size_t vallen = args->lens[2];
     const uint8_t *val = (uint8_t *)malloc(vallen);
-    memcpy((void *)val, &cmd[args->offsets[2]], vallen);
+    memcpy((void *)val, args->buf + args->offsets[2], vallen);
 
     Entry *entry =
         &(Entry){.key = key, .keylen = keylen, .val = val, .vallen = vallen};
@@ -510,7 +546,9 @@ bool try_handle_request(Conn *conn) {
 
   conn->recv_buf_read += args.len;
   size_t remaining = conn->recv_buf_size - args.len;
+#ifdef DEBUG
   printf("[after command] conn->recv_buf_read=%zu conn->recv_buf_size=%zu remaining=%zu\n", conn->recv_buf_read, conn->recv_buf_size, remaining);
+#endif
 
   conn->recv_buf_size = remaining;
 
@@ -528,7 +566,7 @@ bool try_fill_buffer(Conn *conn) {
     size_t cap = sizeof(conn->recv_buf) - conn->recv_buf_size;
     if (conn->recv_buf_read > 0) {
 #ifdef DEBUG
-      printf("compacting buffer from %zu to %zu\n", conn->recv_buf_read, conn->recv_buf_size);
+      printf("compacting buffer by moving %zu byte from offset %zu to 0\n", conn->recv_buf_size, conn->recv_buf_read);
 #endif
       memmove(conn->recv_buf, &conn->recv_buf[conn->recv_buf_read], conn->recv_buf_size);
       conn->recv_buf_read = 0;
