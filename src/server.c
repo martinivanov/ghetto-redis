@@ -198,6 +198,12 @@ int entry_compare(const void *a, const void *b, void *udata) {
   return memcmp(ea->key, eb->key, ea->keylen);
 }
 
+uint64_t entry_hash_xxhash3(const void *a, uint64_t seed0, uint64_t seed1) {
+  const Entry *ea = a;
+  return hashmap_xxhash3(ea->key, ea->keylen, seed0, seed1);
+}
+
+
 uint64_t entry_hash(const void *a, uint64_t seed0, uint64_t seed1) {
   (void)(seed0);
   (void)(seed1);
@@ -661,9 +667,11 @@ void epoll_modify(int fd_epoll, int fd, uint32_t events) {
   }
 }
 
+
+
 int main() {
-  state = hashmap_new(sizeof(Entry), 1 << 24, 0, 0, entry_hash, entry_compare, entry_free,
-                      NULL);
+  int seed = time(NULL);
+  state = hashmap_new(sizeof(Entry), 0, seed, seed, entry_hash_xxhash3, entry_compare, entry_free, NULL);
 
   vector_Conn_ptr conns;
   init_vector_Conn_ptr(&conns, 128);
