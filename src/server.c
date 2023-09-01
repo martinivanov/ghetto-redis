@@ -220,15 +220,28 @@ void entry_free(void *a) {
   }
 }
 
-size_t parse_number(uint8_t **buf) {
-  size_t result = 0;
+typedef enum {
+  PARSE_OK = 0,
+  PARSE_ERROR = 1,
+  PARSE_INCOMPLETE = 2,
+} ParseError;
+
+ParseError parse_number(uint8_t **buf, size_t *result) {
+  size_t res = 0;
   uint8_t *p = *buf;
+
+  // TODO: check if we have a new line
+
   while (*p != '\r') {
-    if (unlikely(*p < (uint8_t)'0' || *p > (uint8_t)'9')) {
-      return (size_t)-1;
+    if (*p < (uint8_t)'0' || *p > (uint8_t)'9') {
+      return PARSE_ERROR;
     }
 
-    result = result * 10 + (*p - (uint8_t)'0');
+    // if (res > (SIZE_MAX - (*p - (uint8_t)'0')) / 10) {
+    //   return PARSE_ERROR;
+    // }
+
+    res = res * 10 + (*p - (uint8_t)'0');
     p++;
   }
 
@@ -236,34 +249,45 @@ size_t parse_number(uint8_t **buf) {
   p += sizeof(CRLF);
   *buf = p;
 
-  return result;
+  *result = res;
+
+  return PARSE_OK;
 }
 
-bool parse_resp_request(Conn *conn, CmdArgs *args) {
+ParseError parse_resp_request(Conn *conn, CmdArgs *args) {
   uint8_t *buf = conn->recv_buf + conn->recv_buf_read;
   uint8_t *start = buf;
   buf++;
-  args->argc = parse_number(&buf);
+
+  ParseError err = parse_number(&buf, &args->argc);
+  if (err != PARSE_OK) {
+    return err;
+  }
 
   for (size_t i = 0; i < args->argc; i++) {
     if (*buf == '$') {
       buf++;
-      size_t arglen = parse_number(&buf);
+      size_t arglen = 0;
+      ParseError err = parse_number(&buf, &arglen);
+      if (err != PARSE_OK) {
+        return err;
+      }
+
       args->lens[i] = arglen;
       args->offsets[i] = buf - start;
       buf += arglen + sizeof(CRLF);
     } else {
-      return false;
+      return PARSE_ERROR;
     }
   }
 
   args->buf = start;
   args->len = buf - start;
 
-  return true;
+  return PARSE_OK;
 }
 
-bool parse_inline_request(Conn *conn, CmdArgs *args) {
+ParseError parse_inline_request(Conn *conn, CmdArgs *args) {
   args->argc = 0;
   args->len = 0;
 
@@ -271,6 +295,7 @@ bool parse_inline_request(Conn *conn, CmdArgs *args) {
   args->buf = buf;
   size_t offset = 0;
   size_t len = 0;
+  bool complete = false;
   bool in_arg = false;
   bool crlf = false;
   size_t i = 0;
@@ -292,14 +317,15 @@ bool parse_inline_request(Conn *conn, CmdArgs *args) {
       crlf = true;
     } else if (buf[i] == '\n') {
       if (!crlf) {
-        return false;
+        return PARSE_ERROR;
       }
+      complete = true;
       crlf = false;
       break;
     } else {
       if (!in_arg) {
         if (args->argc == MAX_ARGC) {
-          return false;
+          return PARSE_ERROR;
         }
         offset = i;
         len = 0;
@@ -307,6 +333,10 @@ bool parse_inline_request(Conn *conn, CmdArgs *args) {
       }
       len++;
     }
+  }
+  
+  if (!complete) {
+    return PARSE_INCOMPLETE;
   }
 
   if (in_arg) {
@@ -317,7 +347,7 @@ bool parse_inline_request(Conn *conn, CmdArgs *args) {
 
   args->len = i + 1;
 
-  return true;
+  return PARSE_OK;
 }
 
 void write_simple_error(Conn *conn, const char *prefix, const char *msg) {
@@ -439,16 +469,20 @@ bool try_handle_request(Conn *conn) {
 
   uint8_t *buf = conn->recv_buf + conn->recv_buf_read;
   CmdArgs args;
-  bool args_parsed = false;
+  ParseError err;
   if (likely(buf[0] == '*')) {
-    args_parsed = parse_resp_request(conn, &args);
+    err = parse_resp_request(conn, &args);
   } else {
-    args_parsed = parse_inline_request(conn, &args);
+    err = parse_inline_request(conn, &args);
   }
 
-  if (unlikely(!args_parsed)) {
-    // add another check here if we have enough data to parse the request
-    //conn->state = END;
+  if (err == PARSE_ERROR) {
+    write_simple_generic_error(conn, "parse error");
+    conn->state = END;
+    return false;
+  }
+
+  if (err == PARSE_INCOMPLETE) {
     return false;
   }
 
