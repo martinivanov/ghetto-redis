@@ -40,6 +40,7 @@ typedef struct {
 #define MAX_ARGC 8
 
 typedef struct {
+  uint8_t *buf;
   size_t argc;
   size_t len;
   size_t offsets[MAX_ARGC];
@@ -55,6 +56,7 @@ static void fd_set_nb(int fd) {
   }
 
   flags |= O_NONBLOCK;
+  flags |= O_NDELAY;
 
   errno = 0;
   (void)fcntl(fd, F_SETFL, flags);
@@ -109,6 +111,7 @@ int32_t accept_new_conn(vector_Conn_ptr *conns, int fd) {
   client->fd = client_fd;
   client->state = REQUEST;
   client->recv_buf_size = 0;
+  client->recv_buf_read = 0;
   client->send_buf_size = 0;
   client->send_buf_sent = 0;
 
@@ -123,6 +126,11 @@ bool try_flush_buffer(Conn *conn) {
   ssize_t rv = 0;
   do {
     size_t remaining = conn->send_buf_size - conn->send_buf_sent;
+    // print buffer contents
+#ifdef DEBUG
+    printf("conn->send_buf_size=%zu conn->send_buf_sent=%zu remaining=%zu\n", conn->send_buf_size, conn->send_buf_sent, remaining);
+    printf("conn->send_buf:\n%.*s\n", (int)MESSAGE_MAX_LENGTH, conn->send_buf);
+#endif
     rv = write(conn->fd, &conn->send_buf[conn->send_buf_sent], remaining);
   } while (rv < 0 && errno == EINTR);
 
@@ -141,8 +149,11 @@ bool try_flush_buffer(Conn *conn) {
   assert(conn->send_buf_sent <= conn->send_buf_size);
 
   if (conn->send_buf_sent == conn->send_buf_size) {
+#ifdef DEBUG
+    printf("Response sent fully --- conn->send_buf_sent=%zu conn->send_buf_size=%zu\n", conn->send_buf_sent, conn->send_buf_size);
+#endif
     // response was sent fully, reset state to request
-    conn->state = REQUEST;
+    //conn->state = REQUEST;
     conn->send_buf_sent = 0;
     conn->send_buf_size = 0;
     return false;
@@ -239,7 +250,6 @@ bool parse_resp_request(Conn *conn, CmdArgs *args) {
       buf++;
       size_t arglen = parse_number(&buf);
       args->lens[i] = arglen;
-      //args->offsets[i] = buf - conn->recv_buf + conn->recv_buf_read;
       args->offsets[i] = buf - start;
       buf += arglen + sizeof(CRLF);
     } else {
@@ -247,6 +257,7 @@ bool parse_resp_request(Conn *conn, CmdArgs *args) {
     }
   }
 
+  args->buf = start;
   args->len = buf - start;
 
   return true;
@@ -257,6 +268,7 @@ bool parse_inline_request(Conn *conn, CmdArgs *args) {
   args->len = 0;
 
   uint8_t *buf = conn->recv_buf + conn->recv_buf_read;
+  args->buf = buf;
   size_t offset = 0;
   size_t len = 0;
   bool in_arg = false;
@@ -309,7 +321,7 @@ bool parse_inline_request(Conn *conn, CmdArgs *args) {
 }
 
 void write_simple_error(Conn *conn, const char *prefix, const char *msg) {
-  conn->send_buf_size =
+  conn->send_buf_size +=
       sprintf((char *)&conn->send_buf, "-%s %s\r\n", prefix, msg);
 }
 
@@ -318,51 +330,54 @@ void write_simple_generic_error(Conn *conn, const char *msg) {
 }
 
 void write_simple_string(Conn *conn, const char *msg, size_t len) {
-  uint8_t *buf = conn->send_buf;
-  buf[0] = '+';
-  buf++;
-  memcpy(buf, msg, len);
-  buf += len;
-  memcpy(buf, CRLF, sizeof(CRLF));
-  buf += 2;
-  conn->send_buf_size = buf - conn->send_buf;
+  uint8_t *buf = conn->send_buf + conn->send_buf_size;
+  conn->send_buf_size += sprintf((char *)buf, "+%.*s\r\n", (int)len, msg);
 }
 
 void write_bulk_string(Conn *conn, const uint8_t *data, size_t len) {
+  uint8_t *buf = conn->send_buf + conn->send_buf_size;
   size_t written = 0;
-  written += (size_t)sprintf((char *)&conn->send_buf[written], "$%zu", len);
-  memcpy(&conn->send_buf[written], CRLF, sizeof(CRLF));
+  written += (size_t)sprintf((char *)buf + written, "$%zu", len);
+  memcpy(buf + written, CRLF, sizeof(CRLF));
   written += 2;
-  memcpy(&conn->send_buf[written], data, len);
+  memcpy(buf + written, data, len);
   written += len;
-  memcpy(&conn->send_buf[written], CRLF, sizeof(CRLF));
+  memcpy(buf + written, CRLF, sizeof(CRLF));
   written += 2;
-  conn->send_buf_size = written;
+  conn->send_buf_size += written;
 }
 
 void write_null_bulk_string(Conn *conn) {
-  conn->send_buf_size = sprintf((char *)&conn->send_buf, "$-1\r\n");
+  conn->send_buf_size += sprintf((char *)&conn->send_buf, "$-1\r\n");
 }
 
 void write_integer(Conn *conn, int64_t val) {
-  conn->send_buf_size = sprintf((char *)&conn->send_buf, ":%ld\r\n", val);
+  conn->send_buf_size += sprintf((char *)&conn->send_buf, ":%ld\r\n", val);
 }
 
 void handle_command(Conn *conn, CmdArgs *args) {
-  const uint8_t *cmd = &conn->recv_buf[conn->recv_buf_read + args->offsets[0]];
+  const uint8_t *cmd = args->buf + args->offsets[0];
   const size_t cmdlen = args->lens[0];
 
-  if (compare_bytes(cmd, CMD_ECHO, cmdlen, sizeof(CMD_ECHO))) {
+  if (compare_bytes(cmd, CMD_PING, cmdlen, sizeof(CMD_PING))) {
+    write_simple_string(conn, "PONG", 4);
+#ifdef DEBUG
+    printf("PING conn->send_buf_size=%zu\n", conn->send_buf_size);
+    printf("PING conn->send_buf:\n%.*s\n", (int)MESSAGE_MAX_LENGTH, conn->send_buf);
+#endif
+  } else if (compare_bytes(cmd, CMD_ECHO, cmdlen, sizeof(CMD_ECHO))) {
     if (args->argc == 2) {
-      const uint8_t *echo = &cmd[args->offsets[1]];
+      const uint8_t *echo = args->buf + args->offsets[1];
       const size_t echolen = args->lens[1];
       write_bulk_string(conn, echo, echolen);
+#ifdef DEBUG
+      printf("ECHO conn->send_buf_size=%zu\n", conn->send_buf_size);
+      printf("ECHO conn->send_buf:\n%.*s\n", (int)MESSAGE_MAX_LENGTH, conn->send_buf);
+#endif
     } else {
       write_simple_generic_error(
           conn, "wrong number of arguments for 'echo' command");
     }
-  } else if (compare_bytes(cmd, CMD_PING, cmdlen, sizeof(CMD_PING))) {
-    write_simple_string(conn, "PONG", 4);
   } else if (compare_bytes(cmd, CMD_QUIT, cmdlen, sizeof(CMD_QUIT))) {
     conn->state = END;
   } else if (compare_bytes(cmd, CMD_GET, cmdlen, sizeof(CMD_GET))) {
@@ -423,7 +438,6 @@ bool try_handle_request(Conn *conn) {
   }
 
   uint8_t *buf = conn->recv_buf + conn->recv_buf_read;
-  bool result = false;
   CmdArgs args;
   bool args_parsed = false;
   if (likely(buf[0] == '*')) {
@@ -433,7 +447,8 @@ bool try_handle_request(Conn *conn) {
   }
 
   if (unlikely(!args_parsed)) {
-    conn->state = END;
+    // add another check here if we have enough data to parse the request
+    //conn->state = END;
     return false;
   }
 
@@ -441,7 +456,7 @@ bool try_handle_request(Conn *conn) {
   for (size_t i = 0; i < args.argc; i++) {
     printf("Arg %zu: ", i);
     for (size_t j = 0; j < args.lens[i]; j++) {
-      printf("%c", conn->recv_buf[conn->recv_buf_read + args.offsets[i] + j]);
+      printf("%c", args.buf[args.offsets[i] + j]);
     }
     printf("\n");
   }
@@ -461,15 +476,14 @@ bool try_handle_request(Conn *conn) {
 
   conn->recv_buf_read += args.len;
   size_t remaining = conn->recv_buf_size - args.len;
+  printf("[after command] conn->recv_buf_read=%zu conn->recv_buf_size=%zu remaining=%zu\n", conn->recv_buf_read, conn->recv_buf_size, remaining);
 
   conn->recv_buf_size = remaining;
 
-  conn->state = RESPONSE;
-  state_response(conn);
+  //conn->state = RESPONSE;
+  //state_response(conn);
 
-  result = (conn->state == REQUEST);
-
-  return result;
+  return conn->recv_buf_size > 0;
 }
 
 bool try_fill_buffer(Conn *conn) {
@@ -486,6 +500,9 @@ bool try_fill_buffer(Conn *conn) {
       conn->recv_buf_read = 0;
     }
     rv = read(conn->fd, &conn->recv_buf[conn->recv_buf_size], cap);
+#ifdef DEBUG
+    printf("read %zu bytes(up to %zu) errno=%d \n", rv, cap, errno);
+#endif
   } while (rv < 0 && errno == EINTR);
 
   if (rv < 0 && errno == EAGAIN) {
@@ -527,13 +544,13 @@ void state_request(Conn *conn) {
 
 void handle_connection(Conn *conn) {
   conn->idle_start = get_monotonic_usec();
-  if (conn->state == REQUEST) {
-    state_request(conn);
-  } else if (conn->state == RESPONSE) {
-    state_response(conn);
-  } else {
-    assert(0);
-  }
+  // if (conn->state == REQUEST) {
+  state_request(conn);
+  // } else if (conn->state == RESPONSE) {
+  //  state_response(conn);
+  // } else {
+  //   assert(0);
+  // }
 }
 
 void conn_done(vector_Conn_ptr *conns, Conn *conn) {
@@ -614,6 +631,23 @@ int main() {
   int nfds = 0;
   struct epoll_event events[128];
   while (running) {
+    for (size_t i = 0; i < size_vector_Conn_ptr(&conns); i++) {
+      Conn *conn = conns.array[i];
+      if (!conn) {
+        continue;
+      }
+
+#ifdef DEBUG
+      printf("flushing client before %d send_buf_size=%zu conn->sent_buf_sent=%zu\n", conn->fd, conn->send_buf_size, conn->send_buf_sent);
+#endif
+      if (conn->send_buf_size != conn->send_buf_sent) {
+        state_response(conn);
+      }
+#ifdef DEBUG
+      printf("flushing client before %d send_buf_size=%zu conn->sent_buf_sent=%zu\n", conn->fd, conn->send_buf_size, conn->send_buf_sent);
+#endif
+    }
+
     nfds = epoll_wait(fd_epoll, events, 128, -1);
     if (nfds == -1) {
       perror("epoll_wait()");
@@ -634,8 +668,9 @@ int main() {
 
         handle_connection(conn);
 
-        if (conn->state & (RESPONSE | BLOCKED)) {
+        if (conn->state & BLOCKED) {
           printf("socket %d is blocked\n", fd);
+          conn->state &= ~BLOCKED;
           epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
         }
 
