@@ -23,11 +23,14 @@
 #include "include/vector_types.h"
 
 #include "include/hashmap.h"
+#include "include/deque.h"
 
 #define unlikely(expr) __builtin_expect(!!(expr), 0)
 #define likely(expr) __builtin_expect(!!(expr), 1)
 
 static struct hashmap *state = NULL;
+static Deque idle_conn_queue = {};
+static Deque pending_writes_queue = {};
 static bool running = true;
 
 typedef struct {
@@ -620,21 +623,13 @@ void state_request(Conn *conn) {
   }
 }
 
-void handle_connection(Conn *conn) {
-  conn->idle_start = get_monotonic_usec();
-  // if (conn->state == REQUEST) {
-  state_request(conn);
-  // } else if (conn->state == RESPONSE) {
-  //  state_response(conn);
-  // } else {
-  //   assert(0);
-  // }
-}
-
 void conn_done(vector_Conn_ptr *conns, Conn *conn) {
   conns->array[conn->fd] = NULL;
   close(conn->fd);
+  deque_detach(&pending_writes_queue, conn->pending_writes_queue_node);
+  deque_detach(&idle_conn_queue, conn->idle_conn_queue_node);
   free(conn);
+  conn = NULL;
 }
 
 void epoll_register(int fd_epoll, int fd, uint32_t events) {
@@ -673,6 +668,9 @@ int main() {
   int seed = time(NULL);
   state = hashmap_new(sizeof(Entry), 0, seed, seed, entry_hash_xxhash3, entry_compare, entry_free, NULL);
 
+  deque_init(&idle_conn_queue);
+  deque_init(&pending_writes_queue);
+
   vector_Conn_ptr conns;
   init_vector_Conn_ptr(&conns, 128);
   for (size_t i = 0; i < capacity_vector_Conn_ptr(&conns); i++) {
@@ -710,25 +708,23 @@ int main() {
 
   int nfds = 0;
   struct epoll_event events[128];
+  int timeout = -1;
   while (running) {
-    for (size_t i = 0; i < size_vector_Conn_ptr(&conns); i++) {
-      Conn *conn = conns.array[i];
-      if (!conn) {
+    while (!deque_is_empty(&pending_writes_queue)) {
+      Conn *conn = deque_pop_front(&pending_writes_queue);
+      if (conn == NULL) {
+        printf("deque_pop_front() returned NULL\n");
         continue;
       }
+      conn->pending_writes_queue_node = NULL;
 
 #ifdef DEBUG
-      printf("flushing client before %d send_buf_size=%zu conn->sent_buf_sent=%zu\n", conn->fd, conn->send_buf_size, conn->send_buf_sent);
+      printf("conn->fd=%d unflushed=%zu\n", conn->fd, conn->send_buf_size - conn->send_buf_sent);
 #endif
-      if (conn->send_buf_size != conn->send_buf_sent) {
-        state_response(conn);
-      }
-#ifdef DEBUG
-      printf("flushing client before %d send_buf_size=%zu conn->sent_buf_sent=%zu\n", conn->fd, conn->send_buf_size, conn->send_buf_sent);
-#endif
+      state_response(conn);
     }
 
-    nfds = epoll_wait(fd_epoll, events, 128, -1);
+    nfds = epoll_wait(fd_epoll, events, 128, timeout);
     if (nfds == -1) {
       perror("epoll_wait()");
       exit(1);
@@ -741,43 +737,55 @@ int main() {
           panic("accept_new_conn()");
         }
         epoll_register(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
+        Conn *conn = conns.array[fd];
+        deque_push_back_node(idle_conn_queue, conn, Conn, idle_conn_queue_node);
       } else {
         struct epoll_event ev = events[i];
         int fd = ev.data.fd;
         Conn *conn = conns.array[fd];
 
-        handle_connection(conn);
-
-        if (conn->state & BLOCKED) {
-          printf("socket %d is blocked\n", fd);
-          conn->state &= ~BLOCKED;
-          epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
-        }
-
-        if (ev.events & EPOLLOUT) {
-          printf("socket %d was blocked and is now writable\n", fd);
+        conn->idle_start = get_monotonic_usec();
+        deque_detach(&idle_conn_queue, conn->idle_conn_queue_node);
+        deque_push_back_node(idle_conn_queue, conn, Conn, idle_conn_queue_node);
+        if (ev.events & EPOLLIN) {
+          state_request(conn);
+        } else if (ev.events & EPOLLOUT) {
+          state_response(conn);
           epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
         }
 
         if (conn->state == END || ev.events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
-          printf("closing fd=%d\n", conn->fd);
           epoll_unregister(fd_epoll, fd);
           conn_done(&conns, conn);
+        } else {
+          if (conn->send_buf_size != conn->send_buf_sent) {
+            deque_push_back_node(pending_writes_queue, conn, Conn, pending_writes_queue_node);
+          }
+
+          if (conn->state & BLOCKED) {
+            conn->state &= ~BLOCKED;
+            epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
+          }
         }
       }
     }
 
-    // uint64_t now_us = get_monotonic_usec();
-    // for (size_t i = 0; i < size_vector_Conn_ptr(&conns); i++) {
-    //   Conn *conn = conns.array[i];
-    //   if (!conn) {
-    //     continue;
-    //   }
+    uint64_t now_us = get_monotonic_usec();
+    while (!deque_is_empty(&idle_conn_queue)) {
+      Conn *conn = idle_conn_queue.head->data;
+      if (conn == NULL) {
+        continue;
+      }
 
-    //   if (now_us - conn->idle_start > 60000000) {
-    //     conn_done(&conns, conn);
-    //   }
-    // }
+      uint64_t elapsed = (now_us - conn->idle_start) / 1000;
+
+      if (elapsed > 5000) {
+        conn_done(&conns, conn);
+      } else {
+        timeout = 5000 - elapsed;
+        break;
+      }
+    }
   }
 
   close(fd_listener);

@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "deque.h"
+
 #define MESSAGE_MAX_LENGTH 8192
 
 enum State {
@@ -27,6 +29,9 @@ typedef struct {
     uint8_t send_buf[MESSAGE_MAX_LENGTH];
 
     uint64_t idle_start;
+
+    DequeNode *pending_writes_queue_node;
+    DequeNode *idle_conn_queue_node;
 } Conn;
 
 int32_t read_full(int fd, char *buf, size_t n);
