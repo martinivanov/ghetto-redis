@@ -70,14 +70,9 @@ void cmd_ping(State *state, Conn *conn, CmdArgs *args) {
 
 void cmd_echo(State *state, Conn *conn, CmdArgs *args) {
   (void)state;
-  if (args->argc == 2) {
-    const uint8_t *echo = args->buf + args->offsets[1];
-    const size_t echolen = args->lens[1];
-    write_bulk_string(conn, echo, echolen);
-  }
-  else {
-    write_simple_generic_error(conn, "wrong number of arguments for 'echo' command");
-  }
+  const uint8_t *echo = args->buf + args->offsets[1];
+  const size_t echolen = args->lens[1];
+  write_bulk_string(conn, echo, echolen);
 }
 void cmd_quit(State *state, Conn *conn, CmdArgs *args) {
   (void)state;

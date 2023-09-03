@@ -194,9 +194,8 @@ void handle_command(State *state, Conn *conn, CmdArgs *args) {
   uint8_t *cmd_name = args->buf + args->offsets[0];
   size_t cmd_name_len = args->lens[0];
   Command *cmd = (Command *)hashmap_get(state->commands, &(Command){.name = cmd_name, .name_len = cmd_name_len});
-  if (cmd) {
-    cmd->func(state, conn, args);
-  } else {
+  
+  if (cmd == NULL) {
     char message[64];
     char *first_arg =
         args->argc > 1 ? (char *)&cmd_name[args->offsets[1]] : "";
@@ -205,7 +204,19 @@ void handle_command(State *state, Conn *conn, CmdArgs *args) {
              "unknown command '%.*s', with args beginning with: '%.*s'",
              (int)cmd_name_len, cmd_name, (int)first_arg_len, first_arg);
     write_simple_generic_error(conn, message);
+    return;
   }
+
+  if (cmd->arity != args->argc - 1) {
+    char message[64];
+    snprintf(message, sizeof(message),
+             "wrong number of arguments for '%.*s' command", (int)cmd_name_len,
+             cmd_name);
+    write_simple_generic_error(conn, message);
+    return;
+  }
+
+  cmd->func(state, conn, args);
 }
 
 bool try_handle_request(State *state, Conn *conn) {
