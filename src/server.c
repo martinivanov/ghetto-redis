@@ -28,11 +28,6 @@
 #define unlikely(expr) __builtin_expect(!!(expr), 0)
 #define likely(expr) __builtin_expect(!!(expr), 1)
 
-static struct hashmap *state = NULL;
-static Deque idle_conn_queue = {};
-static Deque pending_writes_queue = {};
-static bool running = true;
-
 typedef struct {
   const uint8_t *key;
   const size_t keylen;
@@ -40,6 +35,75 @@ typedef struct {
   const size_t vallen;
 } Entry;
 
+typedef struct {
+  vector_Conn_ptr *conns;
+  Deque idle_conn_queue;
+  Deque pending_writes_queue;
+  bool running;
+  size_t num_dbs;
+  struct hashmap **dbs;
+} State;
+
+int entry_compare(const void *a, const void *b, void *udata) {
+  (void)(udata);
+
+  const Entry *ea = a;
+  const Entry *eb = b;
+  if (ea->keylen != eb->keylen) {
+    return ea->keylen - eb->keylen;
+  }
+  return memcmp(ea->key, eb->key, ea->keylen);
+}
+
+uint64_t entry_hash_xxhash3(const void *a, uint64_t seed0, uint64_t seed1) {
+  const Entry *ea = a;
+  return hashmap_xxhash3(ea->key, ea->keylen, seed0, seed1);
+}
+
+
+uint64_t entry_hash(const void *a, uint64_t seed0, uint64_t seed1) {
+  (void)(seed0);
+  (void)(seed1);
+
+  const Entry *ea = a;
+  uint64_t hash = 0;
+  for (size_t i = 0; i < ea->keylen; i++) {
+    hash = hash * 31 + ea->key[i];
+  }
+  return hash;
+}
+
+void entry_free(void *a) {
+  Entry *ea = a;
+  if (ea->key) {
+    free((void *)ea->key);
+  }
+  if (ea->val) {
+    free((void *)ea->val);
+  }
+}
+
+void init_server_state(State *state, size_t num_dbs) {
+  vector_Conn_ptr *conns = (vector_Conn_ptr*)malloc(sizeof(vector_Conn_ptr));
+  init_vector_Conn_ptr(conns, 128);
+  for (size_t i = 0; i < capacity_vector_Conn_ptr(conns); i++) {
+    conns->array[i] = NULL;
+  }
+
+  state->conns = conns;
+
+  deque_init(&state->idle_conn_queue);
+  deque_init(&state->pending_writes_queue);
+
+  int seed = time(NULL);
+  state->num_dbs = num_dbs;
+  state->dbs = (struct hashmap **)malloc(sizeof(struct hashmap *) * num_dbs);
+  for (size_t i = 0; i < num_dbs; i++) {
+    state->dbs[i] = hashmap_new(sizeof(Entry), 0, seed, seed, entry_hash_xxhash3, entry_compare, entry_free, NULL);
+  }
+
+  state->running = true;
+}
 
 static void fd_set_nb(int fd) {
   errno = 0;
@@ -84,10 +148,10 @@ static uint64_t get_monotonic_usec() {
   return tv.tv_sec * 1000000 + tv.tv_nsec / 1000;
 }
 
-int32_t accept_new_conn(vector_Conn_ptr *conns, int fd) {
+int32_t accept_new_conn(State *state, int fd_listener) {
   struct sockaddr_in client_addr = {};
   socklen_t socklen = sizeof(client_addr);
-  int client_fd = accept(fd, (struct sockaddr *)&client_addr, &socklen);
+  int client_fd = accept(fd_listener, (struct sockaddr *)&client_addr, &socklen);
   if (client_fd < 0) {
     warn("accept() error");
     return -1;
@@ -104,6 +168,7 @@ int32_t accept_new_conn(vector_Conn_ptr *conns, int fd) {
   }
 
   client->fd = client_fd;
+  client->db = 0;
   client->recv_buf_size = 0;
   client->recv_buf_read = 0;
   client->send_buf_size = 0;
@@ -111,7 +176,8 @@ int32_t accept_new_conn(vector_Conn_ptr *conns, int fd) {
 
   client->idle_start = get_monotonic_usec();
 
-  conn_put(conns, client);
+  conn_put(state->conns, client);
+  deque_push_back_node(state->idle_conn_queue, client, Conn, idle_conn_queue_node);
 
   return client_fd;
 }
@@ -177,46 +243,9 @@ static const uint8_t CMD_QUIT[] = {'Q', 'U', 'I', 'T'};
 static const uint8_t CMD_SHUTDOWN[] = {'S', 'H', 'U', 'T', 'D', 'O', 'W', 'N'};
 static const uint8_t CMD_FLUSHALL[] = {'F', 'L', 'U', 'S', 'H', 'A', 'L', 'L'};
 
-int entry_compare(const void *a, const void *b, void *udata) {
-  (void)(udata);
-
-  const Entry *ea = a;
-  const Entry *eb = b;
-  if (ea->keylen != eb->keylen) {
-    return ea->keylen - eb->keylen;
-  }
-  return memcmp(ea->key, eb->key, ea->keylen);
-}
-
-uint64_t entry_hash_xxhash3(const void *a, uint64_t seed0, uint64_t seed1) {
-  const Entry *ea = a;
-  return hashmap_xxhash3(ea->key, ea->keylen, seed0, seed1);
-}
 
 
-uint64_t entry_hash(const void *a, uint64_t seed0, uint64_t seed1) {
-  (void)(seed0);
-  (void)(seed1);
-
-  const Entry *ea = a;
-  uint64_t hash = 0;
-  for (size_t i = 0; i < ea->keylen; i++) {
-    hash = hash * 31 + ea->key[i];
-  }
-  return hash;
-}
-
-void entry_free(void *a) {
-  Entry *ea = a;
-  if (ea->key) {
-    free((void *)ea->key);
-  }
-  if (ea->val) {
-    free((void *)ea->val);
-  }
-}
-
-void handle_command(Conn *conn, CmdArgs *args) {
+void handle_command(State *state, Conn *conn, CmdArgs *args) {
   const uint8_t *cmd = args->buf + args->offsets[0];
   const size_t cmdlen = args->lens[0];
 
@@ -245,8 +274,9 @@ void handle_command(Conn *conn, CmdArgs *args) {
     const uint8_t *key = args->buf + args->offsets[1];
     const size_t keylen = args->lens[1];
 
+    struct hashmap *db = state->dbs[conn->db];
     Entry *entry =
-        (Entry *)hashmap_get(state, &(Entry){.key = key, .keylen = keylen});
+        (Entry *)hashmap_get(db, &(Entry){.key = key, .keylen = keylen});
     if (entry) {
       write_bulk_string(conn, entry->val, entry->vallen);
     } else {
@@ -261,15 +291,17 @@ void handle_command(Conn *conn, CmdArgs *args) {
     const uint8_t *val = (uint8_t *)malloc(vallen);
     memcpy((void *)val, args->buf + args->offsets[2], vallen);
 
-    Entry *entry =
-        &(Entry){.key = key, .keylen = keylen, .val = val, .vallen = vallen};
-    hashmap_set(state, entry);
+    struct hashmap *db = state->dbs[conn->db];
+
+    Entry *entry = &(Entry){.key = key, .keylen = keylen, .val = val, .vallen = vallen};
+    hashmap_set(db, entry);
     write_simple_string(conn, "OK", 2);
   } else if (compare_bytes(cmd, CMD_DEL, cmdlen, sizeof(CMD_DEL))) {
     const uint8_t *key = &cmd[args->offsets[1]];
     const size_t keylen = args->lens[1];
 
-    const void *entry = hashmap_delete(state, &(Entry){.key = (void *)key, .keylen = keylen});
+    struct hashmap *db = state->dbs[conn->db];
+    const void *entry = hashmap_delete(db, &(Entry){.key = (void *)key, .keylen = keylen});
     if (entry) {
       entry_free((void*)entry);
       write_integer(conn, 1);
@@ -277,9 +309,10 @@ void handle_command(Conn *conn, CmdArgs *args) {
       write_integer(conn, 0);
     }
   } else if (compare_bytes(cmd, CMD_SHUTDOWN, cmdlen, sizeof(CMD_SHUTDOWN))) {
-    running = false;
+    state->running = false;
   } else if (compare_bytes(cmd, CMD_FLUSHALL, cmdlen, sizeof(CMD_FLUSHALL))) {
-    hashmap_clear(state, true);
+    struct hashmap *db = state->dbs[conn->db];
+    hashmap_clear(db, true);
     write_simple_string(conn, "OK", 2);
   } else {
     char message[64];
@@ -293,7 +326,7 @@ void handle_command(Conn *conn, CmdArgs *args) {
   }
 }
 
-bool try_handle_request(Conn *conn) {
+bool try_handle_request(State *state, Conn *conn) {
   if (unlikely(conn->recv_buf_size < 1)) {
     return false;
   }
@@ -328,7 +361,7 @@ bool try_handle_request(Conn *conn) {
 #endif
 
   if (likely(args.argc > 0)) {
-    handle_command(conn, &args);
+    handle_command(state, conn, &args);
   }
 
   if (unlikely(conn->state == END)) {
@@ -350,7 +383,7 @@ bool try_handle_request(Conn *conn) {
   return conn->recv_buf_size > 0;
 }
 
-bool try_fill_buffer(Conn *conn) {
+bool try_fill_buffer(State *state, Conn *conn) {
   assert(conn->recv_buf_size < sizeof(conn->recv_buf));
 
   ssize_t rv = 0;
@@ -394,23 +427,23 @@ bool try_fill_buffer(Conn *conn) {
   conn->recv_buf_size += (size_t)rv;
   assert(conn->recv_buf_size <= sizeof(conn->recv_buf));
 
-  while (try_handle_request(conn)) {
+  while (try_handle_request(state, conn)) {
   }
 
   bool test = (conn->state == END);
   return test;
 }
 
-void state_request(Conn *conn) {
-  while (try_fill_buffer(conn)) {
+void state_request(State *state, Conn *conn) {
+  while (try_fill_buffer(state, conn)) {
   }
 }
 
-void conn_done(vector_Conn_ptr *conns, Conn *conn) {
+void conn_done(State *state, Conn *conn) {
   close(conn->fd);
-  deque_detach(&pending_writes_queue, conn->pending_writes_queue_node);
-  deque_detach(&idle_conn_queue, conn->idle_conn_queue_node);
-  conns->array[conn->fd] = NULL;
+  deque_detach(&state->pending_writes_queue, conn->pending_writes_queue_node);
+  deque_detach(&state->idle_conn_queue, conn->idle_conn_queue_node);
+  state->conns->array[conn->fd] = NULL;
   free(conn);
   conn = NULL;
 }
@@ -445,9 +478,9 @@ void epoll_modify(int fd_epoll, int fd, uint32_t events) {
   }
 }
 
-void flush_pending_writes(Deque *queue) {
-    while (!deque_is_empty(queue)) {
-      Conn *conn = deque_pop_front(queue);
+void flush_pending_writes(State *state) {
+    while (!deque_is_empty(&state->pending_writes_queue)) {
+      Conn *conn = deque_pop_front(&state->pending_writes_queue);
       if (conn == NULL) {
         continue;
       }
@@ -458,8 +491,9 @@ void flush_pending_writes(Deque *queue) {
 
 #define MAX_IDLE_MS 5000
 
-uint64_t close_idle_connections(Deque *queue, vector_Conn_ptr *conns) {
+uint64_t close_idle_connections(State *state) {
   uint64_t now_us = get_monotonic_usec();
+  Deque *queue = &state->idle_conn_queue;
   while (!deque_is_empty(queue)) {
     Conn *conn = queue->head->data;
     if (conn == NULL) {
@@ -468,7 +502,7 @@ uint64_t close_idle_connections(Deque *queue, vector_Conn_ptr *conns) {
 
     uint64_t elapsed = (now_us - conn->idle_start) / 1000;
     if (elapsed > MAX_IDLE_MS) {
-      conn_done(conns, conn);
+      conn_done(state, conn);
     } else {
       return MAX_IDLE_MS - elapsed;
     }
@@ -478,17 +512,8 @@ uint64_t close_idle_connections(Deque *queue, vector_Conn_ptr *conns) {
 }
 
 int main() {
-  int seed = time(NULL);
-  state = hashmap_new(sizeof(Entry), 0, seed, seed, entry_hash_xxhash3, entry_compare, entry_free, NULL);
-
-  deque_init(&idle_conn_queue);
-  deque_init(&pending_writes_queue);
-
-  vector_Conn_ptr conns;
-  init_vector_Conn_ptr(&conns, 128);
-  for (size_t i = 0; i < capacity_vector_Conn_ptr(&conns); i++) {
-    conns.array[i] = NULL;
-  }
+  State state;
+  init_server_state(&state, 16);
 
   int fd_listener = socket(AF_INET, SOCK_STREAM, 0);
   int val = 1;
@@ -522,8 +547,8 @@ int main() {
   int nfds = 0;
   struct epoll_event events[128];
   int timeout = -1;
-  while (running) {
-    flush_pending_writes(&pending_writes_queue);
+  while (state.running) {
+    flush_pending_writes(&state);
 
     nfds = epoll_wait(fd_epoll, events, 128, timeout);
     if (nfds == -1) {
@@ -533,23 +558,21 @@ int main() {
 
     for (int i = 0; i < nfds; i++) {
       if (events[i].data.fd == fd_listener) {
-        int fd = accept_new_conn(&conns, fd_listener);
+        int fd = accept_new_conn(&state, fd_listener);
         if (fd < 0) {
           panic("accept_new_conn()");
         }
         epoll_register(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
-        Conn *conn = conns.array[fd];
-        deque_push_back_node(idle_conn_queue, conn, Conn, idle_conn_queue_node);
       } else {
         struct epoll_event ev = events[i];
         int fd = ev.data.fd;
-        Conn *conn = conns.array[fd];
+        Conn *conn = state.conns->array[fd];
 
         conn->idle_start = get_monotonic_usec();
-        deque_detach(&idle_conn_queue, conn->idle_conn_queue_node);
-        deque_push_back_node(idle_conn_queue, conn, Conn, idle_conn_queue_node);
+        deque_detach(&state.idle_conn_queue, conn->idle_conn_queue_node);
+        deque_push_back_node(state.idle_conn_queue, conn, Conn, idle_conn_queue_node);
         if (ev.events & EPOLLIN) {
-          state_request(conn);
+          state_request(&state, conn);
         } else if (ev.events & EPOLLOUT) {
           state_response(conn);
           epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
@@ -557,10 +580,10 @@ int main() {
 
         if (conn->state == END || ev.events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
           epoll_unregister(fd_epoll, fd);
-          conn_done(&conns, conn);
+          conn_done(&state, conn);
         } else {
           if (conn->send_buf_size != conn->send_buf_sent) {
-            deque_push_back_node(pending_writes_queue, conn, Conn, pending_writes_queue_node);
+            deque_push_back_node(state.pending_writes_queue, conn, Conn, pending_writes_queue_node);
           }
 
           if (conn->state & BLOCKED) {
@@ -571,7 +594,7 @@ int main() {
       }
     }
 
-    timeout = close_idle_connections(&idle_conn_queue, &conns);
+    timeout = close_idle_connections(&state);
   }
 
   close(fd_listener);
