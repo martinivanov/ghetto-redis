@@ -20,7 +20,7 @@
 #include "include/logging.h"
 #include "include/protocol.h"
 #include "include/vector.h"
-//#include "include/vector_types.h"
+#include "include/vector_types.h"
 
 #include "include/hashmap.h"
 #include "include/deque.h"

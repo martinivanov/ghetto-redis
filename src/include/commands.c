@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -43,6 +44,7 @@ struct hashmap* init_commands() {
   register_command(commands, "DEL", 1, cmd_del);
   register_command(commands, "SHUTDOWN", 0, cmd_shutdown);
   register_command(commands, "FLUSHALL", 0, cmd_flushall);
+  register_command(commands, "SELECT", 1, cmd_select);
 
   return commands;
 }
@@ -137,7 +139,39 @@ void cmd_shutdown(State *state, Conn *conn, CmdArgs *args) {
 void cmd_flushall(State *state, Conn *conn, CmdArgs *args) {
   (void)args;
 
-  struct hashmap *db = state->dbs[conn->db];
-  hashmap_clear(db, true);
+  for (size_t i = 0; i < state->num_dbs; i++) {
+    struct hashmap *db = state->dbs[i];
+    hashmap_clear(db, true);
+  }
+
+  write_simple_string(conn, "OK", 2);
+}
+
+void cmd_select(State *state, Conn *conn, CmdArgs *args) {
+  (void)state;
+
+  const uint8_t *cmd = args->buf + args->offsets[0];
+  const uint8_t *db = &cmd[args->offsets[1]];
+  const size_t dblen = args->lens[1];
+
+  char* tmp = (char*)malloc(dblen + 1);
+  memcpy(tmp, db, dblen);
+  tmp[dblen] = '\0';
+
+  char *endptr;
+  uint64_t dbnum = strtoull(tmp, &endptr, 10);
+  free(tmp);
+
+  if (errno) {
+    write_simple_generic_error(conn, "invalid DB index");
+    return;
+  }
+
+  if (dbnum > state->num_dbs) {
+    write_simple_generic_error(conn, "invalid DB index");
+    return;
+  }
+  
+  conn->db = dbnum;
   write_simple_string(conn, "OK", 2);
 }

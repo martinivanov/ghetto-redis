@@ -27,6 +27,7 @@ void cmd_set(State *state, Conn *conn, CmdArgs *args);
 void cmd_del(State *state, Conn *conn, CmdArgs *args);
 void cmd_shutdown(State *state, Conn *conn, CmdArgs *args);
 void cmd_flushall(State *state, Conn *conn, CmdArgs *args);
+void cmd_select(State *state, Conn *conn, CmdArgs *args);
 
 
 #endif
