@@ -196,7 +196,6 @@ void handle_command(State *state, Conn *conn, CmdArgs *args) {
   Command *cmd = (Command *)hashmap_get(state->commands, &(Command){.name = cmd_name, .name_len = cmd_name_len});
   if (cmd) {
     cmd->func(state, conn, args);
-    return;
   } else {
     char message[64];
     char *first_arg =
