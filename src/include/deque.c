@@ -14,9 +14,7 @@ bool deque_is_empty(Deque *deque) {
     return !deque->head;
 }
 
-void deque_push_front(Deque *deque, void *data) {
-    DequeNode *node = malloc(sizeof(DequeNode));
-    node->data = data;
+void deque_push_front_node(Deque *deque, DequeNode *node) {
     node->next = deque->head;
     node->prev = NULL;
 
@@ -29,11 +27,15 @@ void deque_push_front(Deque *deque, void *data) {
     deque->head = node;
 }
 
-void deque_push_back(Deque *deque, void *data) {
+void deque_push_front(Deque *deque, void *data) {
     DequeNode *node = malloc(sizeof(DequeNode));
     node->data = data;
-    node->prev = deque->tail;
+    deque_push_front_node(deque, node);
+}
+
+void deque_push_back_node(Deque *deque, DequeNode *node) {
     node->next = NULL;
+    node->prev = deque->tail;
 
     if (deque->tail) {
         deque->tail->next = node;
@@ -42,6 +44,12 @@ void deque_push_back(Deque *deque, void *data) {
     }
 
     deque->tail = node;
+}
+
+void deque_push_back(Deque *deque, void *data) {
+    DequeNode *node = malloc(sizeof(DequeNode));
+    node->data = data;
+    deque_push_back_node(deque, node);
 }
 
 void* deque_pop_front(Deque *deque) {
@@ -100,6 +108,31 @@ void deque_detach(Deque *deque, DequeNode *node) {
     }
 }
 
+void deque_move_to_back(Deque *deque, DequeNode *node) {
+    if (deque == NULL) return;
+    if (deque_is_empty(deque)) return;
+    if (node == NULL) return;
+
+    if (node == deque->tail) {
+        return;
+    }
+
+    deque_detach(deque, node);
+    deque_push_back_node(deque, node);
+}
+
+void deque_move_to_front(Deque *deque, DequeNode *node) {
+    if (deque == NULL) return;
+    if (deque_is_empty(deque)) return;
+    if (node == NULL) return;
+
+    if (node == deque->head) {
+        return;
+    }
+
+    deque_detach(deque, node);
+    deque_push_front_node(deque, node);
+}
 
 void deque_destroy(Deque *deque) {
     while (!deque_is_empty(deque)) {

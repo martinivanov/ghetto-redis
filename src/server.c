@@ -191,7 +191,7 @@ int32_t accept_new_conn(State *state, int fd_listener) {
   client->idle_start = get_monotonic_usec();
 
   conn_put(state->conns, client);
-  deque_push_back_node(state->idle_conn_queue, client, Conn, idle_conn_queue_node);
+  deque_push_back_and_attach(state->idle_conn_queue, client, Conn, idle_conn_queue_node);
 
   return client_fd;
 }
@@ -587,9 +587,7 @@ int main() {
         Conn *conn = state.conns->array[fd];
 
         conn->idle_start = get_monotonic_usec();
-        deque_detach(&state.idle_conn_queue, conn->idle_conn_queue_node);
-        free(conn->idle_conn_queue_node);
-        deque_push_back_node(state.idle_conn_queue, conn, Conn, idle_conn_queue_node);
+        deque_move_to_back(&state.idle_conn_queue, conn->idle_conn_queue_node);
         if (ev.events & EPOLLIN) {
           state_request(&state, conn);
         } else if (ev.events & EPOLLOUT) {
@@ -602,7 +600,7 @@ int main() {
           conn_done(&state, conn);
         } else {
           if (conn->send_buf_size != conn->send_buf_sent) {
-            deque_push_back_node(state.pending_writes_queue, conn, Conn, pending_writes_queue_node);
+            deque_push_back_and_attach(state.pending_writes_queue, conn, Conn, pending_writes_queue_node);
           }
 
           if (conn->state & BLOCKED) {
