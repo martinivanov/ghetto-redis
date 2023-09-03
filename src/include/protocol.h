@@ -8,6 +8,7 @@
 #include "deque.h"
 
 #define MESSAGE_MAX_LENGTH 8192
+#define MAX_ARGC 8
 
 enum State {
     REQUEST = 1 << 0,
@@ -15,6 +16,22 @@ enum State {
     BLOCKED = 1 << 2,
     END = 1 << 31,
 };
+
+typedef enum {
+  PARSE_OK = 0,
+  PARSE_ERROR = 1,
+  PARSE_INCOMPLETE = 2,
+} ParseError;
+
+typedef struct {
+  uint8_t *buf;
+  size_t argc;
+  size_t len;
+  size_t offsets[MAX_ARGC];
+  size_t lens[MAX_ARGC];
+} CmdArgs;
+
+static const uint8_t CRLF[] = {'\r', '\n'};
 
 typedef struct {
     int fd;
@@ -34,7 +51,15 @@ typedef struct {
     DequeNode *idle_conn_queue_node;
 } Conn;
 
-int32_t read_full(int fd, char *buf, size_t n);
-int32_t write_all(int fd, const char *buf, size_t n);
+void write_simple_error(Conn *conn, const char *prefix, const char *msg);
+void write_simple_generic_error(Conn *conn, const char *msg);
+void write_simple_string(Conn *conn, const char *msg, size_t len);
+void write_bulk_string(Conn *conn, const uint8_t *data, size_t len);
+void write_null_bulk_string(Conn *conn);
+void write_integer(Conn *conn, int64_t val);
+
+ParseError parse_number(uint8_t **cur, uint8_t *end, size_t *result);
+ParseError parse_resp_request(Conn *conn, CmdArgs *args);
+ParseError parse_inline_request(Conn *conn, CmdArgs *args);
 
 #endif
