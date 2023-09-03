@@ -104,7 +104,6 @@ int32_t accept_new_conn(vector_Conn_ptr *conns, int fd) {
   }
 
   client->fd = client_fd;
-  client->state = REQUEST;
   client->recv_buf_size = 0;
   client->recv_buf_read = 0;
   client->send_buf_size = 0;
@@ -147,8 +146,6 @@ bool try_flush_buffer(Conn *conn) {
 #ifdef DEBUG
     printf("Response sent fully --- conn->send_buf_sent=%zu conn->send_buf_size=%zu\n", conn->send_buf_sent, conn->send_buf_size);
 #endif
-    // response was sent fully, reset state to request
-    //conn->state = REQUEST;
     conn->send_buf_sent = 0;
     conn->send_buf_size = 0;
     return false;
@@ -350,9 +347,6 @@ bool try_handle_request(Conn *conn) {
 
   conn->recv_buf_size = remaining;
 
-  //conn->state = RESPONSE;
-  //state_response(conn);
-
   return conn->recv_buf_size > 0;
 }
 
@@ -416,9 +410,9 @@ void conn_done(vector_Conn_ptr *conns, Conn *conn) {
   close(conn->fd);
   deque_detach(&pending_writes_queue, conn->pending_writes_queue_node);
   deque_detach(&idle_conn_queue, conn->idle_conn_queue_node);
+  conns->array[conn->fd] = NULL;
   free(conn);
   conn = NULL;
-  conns->array[conn->fd] = NULL;
 }
 
 void epoll_register(int fd_epoll, int fd, uint32_t events) {
@@ -451,7 +445,37 @@ void epoll_modify(int fd_epoll, int fd, uint32_t events) {
   }
 }
 
+void flush_pending_writes(Deque *queue) {
+    while (!deque_is_empty(queue)) {
+      Conn *conn = deque_pop_front(queue);
+      if (conn == NULL) {
+        continue;
+      }
+      conn->pending_writes_queue_node = NULL;
+      state_response(conn);
+    }
+}
 
+#define MAX_IDLE_MS 5000
+
+uint64_t close_idle_connections(Deque *queue, vector_Conn_ptr *conns) {
+  uint64_t now_us = get_monotonic_usec();
+  while (!deque_is_empty(queue)) {
+    Conn *conn = queue->head->data;
+    if (conn == NULL) {
+      continue;
+    }
+
+    uint64_t elapsed = (now_us - conn->idle_start) / 1000;
+    if (elapsed > MAX_IDLE_MS) {
+      conn_done(conns, conn);
+    } else {
+      return MAX_IDLE_MS - elapsed;
+    }
+  }
+
+  return MAX_IDLE_MS; 
+}
 
 int main() {
   int seed = time(NULL);
@@ -499,19 +523,7 @@ int main() {
   struct epoll_event events[128];
   int timeout = -1;
   while (running) {
-    while (!deque_is_empty(&pending_writes_queue)) {
-      Conn *conn = deque_pop_front(&pending_writes_queue);
-      if (conn == NULL) {
-        printf("deque_pop_front() returned NULL\n");
-        continue;
-      }
-      conn->pending_writes_queue_node = NULL;
-
-#ifdef DEBUG
-      printf("conn->fd=%d unflushed=%zu\n", conn->fd, conn->send_buf_size - conn->send_buf_sent);
-#endif
-      state_response(conn);
-    }
+    flush_pending_writes(&pending_writes_queue);
 
     nfds = epoll_wait(fd_epoll, events, 128, timeout);
     if (nfds == -1) {
@@ -559,22 +571,7 @@ int main() {
       }
     }
 
-    uint64_t now_us = get_monotonic_usec();
-    while (!deque_is_empty(&idle_conn_queue)) {
-      Conn *conn = idle_conn_queue.head->data;
-      if (conn == NULL) {
-        continue;
-      }
-
-      uint64_t elapsed = (now_us - conn->idle_start) / 1000;
-
-      if (elapsed > 5000) {
-        conn_done(&conns, conn);
-      } else {
-        timeout = 5000 - elapsed;
-        break;
-      }
-    }
+    timeout = close_idle_connections(&idle_conn_queue, &conns);
   }
 
   close(fd_listener);
