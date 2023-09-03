@@ -64,6 +64,7 @@ void free_server_state(State *state) {
   free_vector_Conn_ptr(state->conns);
   free(state->conns);
   state->conns = NULL;
+  free_commands(state->commands);
 
   deque_destroy(&state->idle_conn_queue);
   deque_destroy(&state->pending_writes_queue);

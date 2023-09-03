@@ -10,7 +10,7 @@
 
 typedef void (*command_func)(State *state, Conn* conn, CmdArgs* args);
 
-int cmd_compare(const void *a, const void *b, void *udata) {
+int command_compare(const void *a, const void *b, void *udata) {
   (void)(udata);
 
   const Command *ca = a;
@@ -21,20 +21,13 @@ int cmd_compare(const void *a, const void *b, void *udata) {
   return memcmp(ca->name, cb->name, ca->name_len);
 }
 
-uint64_t cmd_hash(const void *a, uint64_t seed0, uint64_t seed1) {
+uint64_t command_hash(const void *a, uint64_t seed0, uint64_t seed1) {
   const Command *c = a;
   return hashmap_xxhash3(c->name, c->name_len, seed0, seed1);
 }
 
-void cmd_free(void *a) {
-  Command *c = a;
-  if (c->name) {
-    free((void *)c->name);
-  }
-}
-
 struct hashmap* init_commands() {
-  struct hashmap *commands = hashmap_new(sizeof(Command), 1 << 16, 0, 0, cmd_hash, cmd_compare, cmd_free, NULL);
+  struct hashmap *commands = hashmap_new(sizeof(Command), 1 << 16, 0, 0, command_hash, command_compare, NULL, NULL);
 
   register_command(commands, "PING", 0, cmd_ping);
   register_command(commands, "ECHO", 1, cmd_echo);
@@ -54,11 +47,13 @@ void free_commands(struct hashmap* commands) {
 }
 
 void register_command(struct hashmap* commands, const char* name, size_t arity, command_func func) {
-  Command* cmd = (Command*)malloc(sizeof(Command));
-  cmd->name_len = strlen(name);
-  cmd->name = (uint8_t*)name;
-  cmd->arity = arity;
-  cmd->func = func;
+  Command *cmd = &(Command) {
+    .name_len = strlen(name),
+    .name = (uint8_t*)name,
+    .arity = arity,
+    .func = func
+  };
+
   hashmap_set(commands, cmd);
 }
 
