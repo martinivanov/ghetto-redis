@@ -105,6 +105,20 @@ void init_server_state(State *state, size_t num_dbs) {
   state->running = true;
 }
 
+void free_server_state(State *state) {
+  for (size_t i = 0; i < state->num_dbs; i++) {
+    hashmap_free(state->dbs[i]);
+  }
+  free(state->dbs);
+  state->dbs = NULL;
+  free_vector_Conn_ptr(state->conns);
+  free(state->conns);
+  state->conns = NULL;
+
+  deque_destroy(&state->idle_conn_queue);
+  deque_destroy(&state->pending_writes_queue);
+}
+
 static void fd_set_nb(int fd) {
   errno = 0;
   int flags = fcntl(fd, F_GETFL, 0);
@@ -291,6 +305,8 @@ void handle_command(State *state, Conn *conn, CmdArgs *args) {
     const uint8_t *val = (uint8_t *)malloc(vallen);
     memcpy((void *)val, args->buf + args->offsets[2], vallen);
 
+    printf("allocated key at %p and val at %p\n", key, val);
+
     struct hashmap *db = state->dbs[conn->db];
 
     Entry *entry = &(Entry){.key = key, .keylen = keylen, .val = val, .vallen = vallen};
@@ -442,7 +458,9 @@ void state_request(State *state, Conn *conn) {
 void conn_done(State *state, Conn *conn) {
   close(conn->fd);
   deque_detach(&state->pending_writes_queue, conn->pending_writes_queue_node);
+  free(conn->pending_writes_queue_node);
   deque_detach(&state->idle_conn_queue, conn->idle_conn_queue_node);
+  free(conn->idle_conn_queue_node);
   state->conns->array[conn->fd] = NULL;
   free(conn);
   conn = NULL;
@@ -570,6 +588,7 @@ int main() {
 
         conn->idle_start = get_monotonic_usec();
         deque_detach(&state.idle_conn_queue, conn->idle_conn_queue_node);
+        free(conn->idle_conn_queue_node);
         deque_push_back_node(state.idle_conn_queue, conn, Conn, idle_conn_queue_node);
         if (ev.events & EPOLLIN) {
           state_request(&state, conn);
@@ -598,6 +617,15 @@ int main() {
   }
 
   close(fd_listener);
+  
+  for (size_t i = 0; i < capacity_vector_Conn_ptr(state.conns); i++) {
+    Conn *conn = state.conns->array[i];
+    if (conn) {
+      conn_done(&state, conn);
+    }
+  }
+
+  free_server_state(&state);
 
   return 0;
 }
