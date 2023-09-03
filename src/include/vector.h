@@ -12,17 +12,17 @@
     size_t size;                                                               \
   } vector_##T;                                                                \
                                                                                \
-  void init_vector_##T(vector_##T *a, size_t initialSize) {                    \
+  static inline void init_vector_##T(vector_##T *a, size_t initialSize) {                    \
     a->array = (T *)malloc(initialSize * sizeof(T));                           \
     a->used = 0;                                                               \
     a->size = initialSize;                                                     \
   }                                                                            \
                                                                                \
-  size_t capacity_vector_##T(vector_##T *a) { return a->size; }                \
+  static inline size_t capacity_vector_##T(vector_##T *a) { return a->size; }                \
                                                                                \
-  size_t size_vector_##T(vector_##T *a) { return a->used; }                    \
+  static inline size_t size_vector_##T(vector_##T *a) { return a->used; }                    \
                                                                                \
-  void resize_vector_##T(vector_##T *a, size_t new_size) {                     \
+  static inline void resize_vector_##T(vector_##T *a, size_t new_size) {                     \
     T *new_arr = (T *)realloc(a->array, new_size * sizeof(T));                 \
     if (!new_arr) {                                                            \
       panic("couldn't resize");                                                \
@@ -31,7 +31,7 @@
     a->size = new_size;                                                        \
   }                                                                            \
                                                                                \
-  void insert_vector_##T(vector_##T *a, T element) {                           \
+  static inline void insert_vector_##T(vector_##T *a, T element) {                           \
     if (a->used == a->size) {                                                  \
       a->size *= 2;                                                            \
       a->array = (T *)realloc(a->array, a->size * sizeof(T));                  \
@@ -39,7 +39,7 @@
     a->array[a->used++] = element;                                             \
   }                                                                            \
                                                                                \
-  void remove_vector_##T(vector_##T *a, T element, bool (*pred)(T, T)) {       \
+  static inline void remove_vector_##T(vector_##T *a, T element, bool (*pred)(T, T)) {       \
     size_t i, j;                                                               \
     for (i = 0; i < a->used; i++) {                                            \
       if (pred(a->array[i], element)) {                                        \
@@ -52,19 +52,19 @@
     }                                                                          \
   }                                                                            \
                                                                                \
-  void foreach_vector_##T(vector_##T *a, void (*func)(T)) {                    \
+  static inline void foreach_vector_##T(vector_##T *a, void (*func)(T)) {                    \
     for (size_t i = 0; i < a->used; i++) {                                     \
       func(a->array[i]);                                                       \
     }                                                                          \
   }                                                                            \
                                                                                \
-  void free_vector_##T(vector_##T *a) {                                        \
+  static inline void free_vector_##T(vector_##T *a) {                                        \
     free(a->array);                                                            \
     a->array = NULL;                                                           \
     a->used = a->size = 0;                                                     \
   }                                                                            \
                                                                                \
-  void clear_vector_##T(vector_##T *a) { a->used = 0; }
+  static inline void clear_vector_##T(vector_##T *a) { a->used = 0; }
 
 #define VECTOR_TYPE_PTR(T)                                                     \
   typedef struct {                                                             \
@@ -73,17 +73,17 @@
     size_t size;                                                               \
   } vector_##T##_ptr;                                                          \
                                                                                \
-  void init_vector_##T##_ptr(vector_##T##_ptr *a, size_t initialSize) {        \
+  static inline void init_vector_##T##_ptr(vector_##T##_ptr *a, size_t initialSize) {        \
     a->array = (T **)malloc(initialSize * sizeof(T *));                        \
     a->used = 0;                                                               \
     a->size = initialSize;                                                     \
   }                                                                            \
                                                                                \
-  size_t capacity_vector_##T##_ptr(vector_##T##_ptr *a) { return a->size; }    \
+  static inline size_t capacity_vector_##T##_ptr(vector_##T##_ptr *a) { return a->size; }    \
                                                                                \
-  size_t size_vector_##T##_ptr(vector_##T##_ptr *a) { return a->used; }        \
+  static inline size_t size_vector_##T##_ptr(vector_##T##_ptr *a) { return a->used; }        \
                                                                                \
-  void resize_vector_##T##_ptr(vector_##T##_ptr *a, size_t new_size) {         \
+  static inline void resize_vector_##T##_ptr(vector_##T##_ptr *a, size_t new_size) {         \
     T **new_arr = (T **)realloc(a->array, new_size * sizeof(T *));             \
     if (!new_arr) {                                                            \
       panic("couldn't resize");                                                \
@@ -92,7 +92,7 @@
     a->size = new_size;                                                        \
   }                                                                            \
                                                                                \
-  void insert_vector_##T##_ptr(vector_##T##_ptr *a, T *element) {              \
+  static inline void insert_vector_##T##_ptr(vector_##T##_ptr *a, T *element) {              \
     if (a->used == a->size) {                                                  \
       a->size *= 2;                                                            \
       a->array = (T **)realloc(a->array, a->size * sizeof(T *));               \
@@ -100,7 +100,7 @@
     a->array[a->used++] = element;                                             \
   }                                                                            \
                                                                                \
-  void remove_vector_##T##_ptr(vector_##T##_ptr *a, T *element,                \
+  static inline void remove_vector_##T##_ptr(vector_##T##_ptr *a, T *element,                \
                                bool (*pred)(T *, T *)) {                       \
     size_t i, j;                                                               \
     for (i = 0; i < a->used; i++) {                                            \
@@ -114,17 +114,17 @@
     }                                                                          \
   }                                                                            \
                                                                                \
-  void foreach_vector_##T##_ptr(vector_##T##_ptr *a, void (*func)(T *)) {      \
+  static inline void foreach_vector_##T##_ptr(vector_##T##_ptr *a, void (*func)(T *)) {      \
     for (size_t i = 0; i < a->used; i++) {                                     \
       func(a->array[i]);                                                       \
     }                                                                          \
   }                                                                            \
                                                                                \
-  void free_vector_##T##_ptr(vector_##T##_ptr *a) {                            \
+  static inline void free_vector_##T##_ptr(vector_##T##_ptr *a) {                            \
     free(a->array);                                                            \
     a->array = NULL;                                                           \
     a->used = a->size = 0;                                                     \
   }                                                                            \
                                                                                \
-  void clear_vector_##T##_ptr(vector_##T##_ptr *a) { a->used = 0; }
+  static inline void clear_vector_##T##_ptr(vector_##T##_ptr *a) { a->used = 0; }
 #endif

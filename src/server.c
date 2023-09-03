@@ -20,68 +20,16 @@
 #include "include/logging.h"
 #include "include/protocol.h"
 #include "include/vector.h"
-#include "include/vector_types.h"
+//#include "include/vector_types.h"
 
 #include "include/hashmap.h"
 #include "include/deque.h"
+#include "include/state.h"
+#include "include/commands.h"
+#include "include/kv.h"
 
 #define unlikely(expr) __builtin_expect(!!(expr), 0)
 #define likely(expr) __builtin_expect(!!(expr), 1)
-
-typedef struct {
-  const uint8_t *key;
-  const size_t keylen;
-  const uint8_t *val;
-  const size_t vallen;
-} Entry;
-
-typedef struct {
-  vector_Conn_ptr *conns;
-  Deque idle_conn_queue;
-  Deque pending_writes_queue;
-  bool running;
-  size_t num_dbs;
-  struct hashmap **dbs;
-} State;
-
-int entry_compare(const void *a, const void *b, void *udata) {
-  (void)(udata);
-
-  const Entry *ea = a;
-  const Entry *eb = b;
-  if (ea->keylen != eb->keylen) {
-    return ea->keylen - eb->keylen;
-  }
-  return memcmp(ea->key, eb->key, ea->keylen);
-}
-
-uint64_t entry_hash_xxhash3(const void *a, uint64_t seed0, uint64_t seed1) {
-  const Entry *ea = a;
-  return hashmap_xxhash3(ea->key, ea->keylen, seed0, seed1);
-}
-
-
-uint64_t entry_hash(const void *a, uint64_t seed0, uint64_t seed1) {
-  (void)(seed0);
-  (void)(seed1);
-
-  const Entry *ea = a;
-  uint64_t hash = 0;
-  for (size_t i = 0; i < ea->keylen; i++) {
-    hash = hash * 31 + ea->key[i];
-  }
-  return hash;
-}
-
-void entry_free(void *a) {
-  Entry *ea = a;
-  if (ea->key) {
-    free((void *)ea->key);
-  }
-  if (ea->val) {
-    free((void *)ea->val);
-  }
-}
 
 void init_server_state(State *state, size_t num_dbs) {
   vector_Conn_ptr *conns = (vector_Conn_ptr*)malloc(sizeof(vector_Conn_ptr));
@@ -99,10 +47,12 @@ void init_server_state(State *state, size_t num_dbs) {
   state->num_dbs = num_dbs;
   state->dbs = (struct hashmap **)malloc(sizeof(struct hashmap *) * num_dbs);
   for (size_t i = 0; i < num_dbs; i++) {
-    state->dbs[i] = hashmap_new(sizeof(Entry), 0, seed, seed, entry_hash_xxhash3, entry_compare, entry_free, NULL);
+    state->dbs[i] = hashmap_new(sizeof(Entry), 1 << 20, seed, seed, entry_hash_xxhash3, entry_compare, entry_free, NULL);
   }
 
   state->running = true;
+
+  state->commands = init_commands();
 }
 
 void free_server_state(State *state) {
@@ -240,104 +190,21 @@ void state_response(Conn *conn) {
   }
 }
 
-bool compare_bytes(const uint8_t *a1, const uint8_t *a2, size_t a1_len, size_t a2_len) {
-  if (a1_len != a2_len) {
-    return false;
-  }
-
-  return memcmp(a1, a2, a1_len) == 0;
-}
-
-static const uint8_t CMD_ECHO[] = {'E', 'C', 'H', 'O'};
-static const uint8_t CMD_PING[] = {'P', 'I', 'N', 'G'};
-static const uint8_t CMD_GET[] = {'G', 'E', 'T'};
-static const uint8_t CMD_SET[] = {'S', 'E', 'T'};
-static const uint8_t CMD_DEL[] = {'D', 'E', 'L'};
-static const uint8_t CMD_QUIT[] = {'Q', 'U', 'I', 'T'};
-static const uint8_t CMD_SHUTDOWN[] = {'S', 'H', 'U', 'T', 'D', 'O', 'W', 'N'};
-static const uint8_t CMD_FLUSHALL[] = {'F', 'L', 'U', 'S', 'H', 'A', 'L', 'L'};
-
-
-
 void handle_command(State *state, Conn *conn, CmdArgs *args) {
-  const uint8_t *cmd = args->buf + args->offsets[0];
-  const size_t cmdlen = args->lens[0];
-
-  if (compare_bytes(cmd, CMD_PING, cmdlen, sizeof(CMD_PING))) {
-    write_simple_string(conn, "PONG", 4);
-#ifdef DEBUG
-    printf("PING conn->send_buf_size=%zu\n", conn->send_buf_size);
-    printf("PING conn->send_buf:\n%.*s\n", (int)MESSAGE_MAX_LENGTH, conn->send_buf);
-#endif
-  } else if (compare_bytes(cmd, CMD_ECHO, cmdlen, sizeof(CMD_ECHO))) {
-    if (args->argc == 2) {
-      const uint8_t *echo = args->buf + args->offsets[1];
-      const size_t echolen = args->lens[1];
-      write_bulk_string(conn, echo, echolen);
-#ifdef DEBUG
-      printf("ECHO conn->send_buf_size=%zu\n", conn->send_buf_size);
-      printf("ECHO conn->send_buf:\n%.*s\n", (int)MESSAGE_MAX_LENGTH, conn->send_buf);
-#endif
-    } else {
-      write_simple_generic_error(
-          conn, "wrong number of arguments for 'echo' command");
-    }
-  } else if (compare_bytes(cmd, CMD_QUIT, cmdlen, sizeof(CMD_QUIT))) {
-    conn->state = END;
-  } else if (compare_bytes(cmd, CMD_GET, cmdlen, sizeof(CMD_GET))) {
-    const uint8_t *key = args->buf + args->offsets[1];
-    const size_t keylen = args->lens[1];
-
-    struct hashmap *db = state->dbs[conn->db];
-    Entry *entry =
-        (Entry *)hashmap_get(db, &(Entry){.key = key, .keylen = keylen});
-    if (entry) {
-      write_bulk_string(conn, entry->val, entry->vallen);
-    } else {
-      write_null_bulk_string(conn);
-    }
-  } else if (compare_bytes(cmd, CMD_SET, cmdlen, sizeof(CMD_SET))) {
-    const size_t keylen = args->lens[1];
-    const uint8_t *key = (uint8_t *)malloc(keylen);
-    memcpy((void *)key, args->buf + args->offsets[1], keylen);
-
-    const size_t vallen = args->lens[2];
-    const uint8_t *val = (uint8_t *)malloc(vallen);
-    memcpy((void *)val, args->buf + args->offsets[2], vallen);
-
-    printf("allocated key at %p and val at %p\n", key, val);
-
-    struct hashmap *db = state->dbs[conn->db];
-
-    Entry *entry = &(Entry){.key = key, .keylen = keylen, .val = val, .vallen = vallen};
-    hashmap_set(db, entry);
-    write_simple_string(conn, "OK", 2);
-  } else if (compare_bytes(cmd, CMD_DEL, cmdlen, sizeof(CMD_DEL))) {
-    const uint8_t *key = &cmd[args->offsets[1]];
-    const size_t keylen = args->lens[1];
-
-    struct hashmap *db = state->dbs[conn->db];
-    const void *entry = hashmap_delete(db, &(Entry){.key = (void *)key, .keylen = keylen});
-    if (entry) {
-      entry_free((void*)entry);
-      write_integer(conn, 1);
-    } else {
-      write_integer(conn, 0);
-    }
-  } else if (compare_bytes(cmd, CMD_SHUTDOWN, cmdlen, sizeof(CMD_SHUTDOWN))) {
-    state->running = false;
-  } else if (compare_bytes(cmd, CMD_FLUSHALL, cmdlen, sizeof(CMD_FLUSHALL))) {
-    struct hashmap *db = state->dbs[conn->db];
-    hashmap_clear(db, true);
-    write_simple_string(conn, "OK", 2);
+  uint8_t *cmd_name = args->buf + args->offsets[0];
+  size_t cmd_name_len = args->lens[0];
+  Command *cmd = (Command *)hashmap_get(state->commands, &(Command){.name = cmd_name, .name_len = cmd_name_len});
+  if (cmd) {
+    cmd->func(state, conn, args);
+    return;
   } else {
     char message[64];
     char *first_arg =
-        args->argc > 1 ? (char *)&cmd[args->offsets[1]] : "";
+        args->argc > 1 ? (char *)&cmd_name[args->offsets[1]] : "";
     size_t first_arg_len = args->argc > 1 ? args->lens[1] : 0;
     snprintf(message, sizeof(message),
              "unknown command '%.*s', with args beginning with: '%.*s'",
-             (int)cmdlen, cmd, (int)first_arg_len, first_arg);
+             (int)cmd_name_len, cmd_name, (int)first_arg_len, first_arg);
     write_simple_generic_error(conn, message);
   }
 }

@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <sys/poll.h>
+
 #include "protocol.h"
 #include "vector.h"
 
