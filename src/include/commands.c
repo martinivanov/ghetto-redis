@@ -51,44 +51,6 @@ void free_commands(struct hashmap* commands) {
   hashmap_free(commands);
 }
 
-bool compare_bytes1(const uint8_t *a1, const uint8_t *a2, size_t a1_len, size_t a2_len) {
-  if (a1_len != a2_len) {
-    return false;
-  }
-
-  return memcmp(a1, a2, a1_len) == 0;
-}
-
-command_func get_command(const uint8_t *cmd, size_t cmdlen) {
-  if (compare_bytes1(cmd, (uint8_t*)"PING", cmdlen, 4)) {
-    return &cmd_ping;
-  }
-  else if (compare_bytes1(cmd, (uint8_t*)"ECHO", cmdlen, 4)) {
-    return &cmd_echo;
-  }
-  else if (compare_bytes1(cmd, (uint8_t*)"QUIT", cmdlen, 4)) {
-    return &cmd_quit;
-  }
-  else if (compare_bytes1(cmd, (uint8_t*)"GET", cmdlen, 3)) {
-    return &cmd_get;
-  }
-  else if (compare_bytes1(cmd, (uint8_t*)"SET", cmdlen, 3)) {
-    return &cmd_set;
-  }
-  else if (compare_bytes1(cmd, (uint8_t*)"DEL", cmdlen, 3)) {
-    return &cmd_del;
-  }
-  else if (compare_bytes1(cmd, (uint8_t*)"SHUTDOWN", cmdlen, 8)) {
-    return &cmd_shutdown;
-  }
-  else if (compare_bytes1(cmd, (uint8_t*)"FLUSHALL", cmdlen, 8)) {
-    return &cmd_flushall;
-  }
-  else {
-    return NULL;
-  }
-}
-
 void register_command(struct hashmap* commands, const char* name, size_t arity, command_func func) {
   Command* cmd = (Command*)malloc(sizeof(Command));
   cmd->name_len = strlen(name);
