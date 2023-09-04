@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <ctype.h>
 
 #include "commands.h"
 #include "hashmap.h"
@@ -38,6 +39,10 @@ struct hashmap* init_commands() {
   register_command(commands, "SHUTDOWN", 0, cmd_shutdown);
   register_command(commands, "FLUSHALL", 0, cmd_flushall);
   register_command(commands, "SELECT", 1, cmd_select);
+  register_command(commands, "INCR", 1, cmd_incr);
+  register_command(commands, "DECR", 1, cmd_decr);
+  register_command(commands, "INCRBY", 2, cmd_incrby);
+  register_command(commands, "DECRBY", 2, cmd_decrby);
 
   return commands;
 }
@@ -101,7 +106,10 @@ void cmd_set(State *state, Conn *conn, CmdArgs *args) {
     struct hashmap *db = state->dbs[conn->db];
 
     Entry *entry = &(Entry){.key = key, .keylen = keylen, .val = val, .vallen = vallen};
-    hashmap_set(db, entry);
+    Entry *existing = (Entry *)hashmap_set(db, entry);
+    if (existing) {
+      entry_free((void*)existing);
+    }
     write_simple_string(conn, "OK", 2);
 }
 
@@ -164,4 +172,98 @@ void cmd_select(State *state, Conn *conn, CmdArgs *args) {
   
   conn->db = dbnum;
   write_simple_string(conn, "OK", 2);
+}
+
+bool try_parse_signed_integer(const uint8_t *buf, size_t len, int64_t *result) {
+  int64_t res = 0;
+  bool is_negative = false;
+  size_t pos = 0;
+  
+  if (buf[pos] == '-' || buf[pos] == '+') {
+    if (buf[pos] == '-') {
+      is_negative = true;
+    }
+    pos++;
+  }
+
+  while(pos < len && isdigit(buf[pos])) {
+    res = res * 10 + (buf[pos] - '0');
+    pos++;
+  }
+
+  if (pos != len) {
+    return false;
+  }
+
+  if (is_negative) {
+    res = -res;
+  }
+  
+  *result = res;
+
+  return true;
+}
+
+void modify_counter(State *state, Conn *conn, CmdArgs *args, int64_t delta) {
+  const size_t keylen = args->lens[1];
+  const uint8_t *key = (uint8_t *)malloc(keylen);
+  memcpy((void *)key, args->buf + args->offsets[1], keylen);
+
+  struct hashmap *db = state->dbs[conn->db];
+  int64_t val = 0;
+  Entry *entry = (Entry *)hashmap_get(db, &(Entry){.key = key, .keylen = keylen});
+  if (entry) {
+    if (!try_parse_signed_integer(entry->val, entry->vallen, &val)) {
+      write_simple_generic_error(conn, "value is not an integer or out of range");
+      free((void *)key);
+      return;
+    }
+  }
+
+  val += delta;
+  char *buf = (char*)malloc(20); // 20 bytes for int64_t
+  size_t len = sprintf(buf, "%ld", val);
+  Entry *existing = (Entry *)hashmap_set(db, &(Entry){.key = key, .keylen = keylen, .val = (uint8_t *)buf, .vallen = len});
+  if (existing) {
+    entry_free((void*)existing);
+  }
+  write_integer(conn, val);
+}
+
+void cmd_incr(State *state, Conn *conn, CmdArgs *args) {
+  modify_counter(state, conn, args, 1);
+}
+
+void cmd_decr(State *state, Conn *conn, CmdArgs *args) {
+  modify_counter(state, conn, args, -1);
+}
+
+void cmd_incrby(State *state, Conn *conn, CmdArgs *args) {
+  int64_t delta = 0;
+  if (!try_parse_signed_integer(args->buf + args->offsets[2], args->lens[2], &delta)) {
+    write_simple_generic_error(conn, "value is not an integer or out of range");
+    return;
+  }
+
+  if (delta < 0) {
+    write_simple_generic_error(conn, "increment would produce negative integer");
+    return;
+  }
+
+  modify_counter(state, conn, args, delta);
+}
+
+void cmd_decrby(State *state, Conn *conn, CmdArgs *args) {
+  int64_t delta = 0;
+  if (!try_parse_signed_integer(args->buf + args->offsets[2], args->lens[2], &delta)) {
+    write_simple_generic_error(conn, "value is not an integer or out of range");
+    return;
+  }
+
+  if (delta < 0) {
+    write_simple_generic_error(conn, "decrement would produce negative integer");
+    return;
+  }
+
+  modify_counter(state, conn, args, -delta);
 }
