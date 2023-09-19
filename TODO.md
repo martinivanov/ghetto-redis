@@ -6,3 +6,5 @@
   * https://github.com/jemalloc/jemalloc/
 1. Better command parsing
   * https://github.com/dragonflydb/dragonfly/blob/9e36197742ce9baed19ecc750c9fe5a41e558e99/src/facade/redis_parser.cc#L21
+1. Kernel bypass
+  * https://github.com/Xilinx-CNS/onload
