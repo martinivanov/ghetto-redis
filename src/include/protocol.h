@@ -4,11 +4,12 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <netinet/in.h>
 
 #include "deque.h"
 
 #define MESSAGE_MAX_LENGTH 8192
-#define MAX_ARGC 8
+#define MAX_ARGC 64
 
 enum State {
     REQUEST = 1 << 0,
@@ -37,6 +38,8 @@ typedef struct {
     int fd;
     enum State state;
 
+    struct sockaddr_in addr;
+
     size_t db;
 
     size_t recv_buf_size;
@@ -59,6 +62,7 @@ void write_simple_string(Conn *conn, const char *msg, size_t len);
 void write_bulk_string(Conn *conn, const uint8_t *data, size_t len);
 void write_null_bulk_string(Conn *conn);
 void write_integer(Conn *conn, int64_t val);
+void write_array_header(Conn *conn, size_t len);
 
 ParseError parse_number(uint8_t **cur, uint8_t *end, size_t *result);
 ParseError parse_resp_request(Conn *conn, CmdArgs *args);

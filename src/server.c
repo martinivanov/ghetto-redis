@@ -134,6 +134,7 @@ int32_t accept_new_conn(State *state, int fd_listener) {
 
   client->fd = client_fd;
   client->db = 0;
+  client->addr = client_addr;
   client->recv_buf_size = 0;
   client->recv_buf_read = 0;
   client->send_buf_size = 0;
@@ -208,7 +209,7 @@ void handle_command(State *state, Conn *conn, CmdArgs *args) {
     return;
   }
 
-  if (cmd->arity != args->argc - 1) {
+  if (cmd->arity != args->argc - 1 && cmd->arity != VAR_ARGC) {
     char message[64];
     snprintf(message, sizeof(message),
              "wrong number of arguments for '%.*s' command", (int)cmd_name_len,

@@ -46,6 +46,11 @@ void write_integer(Conn *conn, int64_t val) {
   conn->send_buf_size += sprintf((char *)buf, ":%ld\r\n", val);
 }
 
+void write_array_header(Conn *conn, size_t len) {
+  uint8_t *buf = conn->send_buf + conn->send_buf_size;
+  conn->send_buf_size += sprintf((char *)buf, "*%zu\r\n", len);
+}
+
 ParseError parse_number(uint8_t **cur, uint8_t *end, size_t *result) {
   size_t res = 0;
   uint8_t *p = *cur;

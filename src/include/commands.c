@@ -43,6 +43,9 @@ struct hashmap* init_commands() {
   register_command(commands, "DECR", 1, cmd_decr);
   register_command(commands, "INCRBY", 2, cmd_incrby);
   register_command(commands, "DECRBY", 2, cmd_decrby);
+  register_command(commands, "CLIENTS", 0, cmd_clients);
+  register_command(commands, "MGET", VAR_ARGC, cmd_mget);
+  register_command(commands, "MSET", VAR_ARGC, cmd_mset);
 
   return commands;
 }
@@ -266,4 +269,77 @@ void cmd_decrby(State *state, Conn *conn, CmdArgs *args) {
   }
 
   modify_counter(state, conn, args, -delta);
+}
+
+void cmd_clients(State *state, Conn *conn, CmdArgs *args) {
+  vector_Conn_ptr *conns = state->conns;
+
+  size_t count = 0;
+  for (size_t i = 0; i < conns->size; i++) {
+    Conn *c = conns->array[i];
+    if (c == NULL || c->state == END) {
+      continue;
+    }
+    count++;
+  }
+
+  write_array_header(conn, count);
+
+  for (size_t i = 0; i < conns->size; i++) {
+    Conn *c = conns->array[i];
+    if (c == NULL || c->state == END) {
+      continue;
+    }
+
+    uint16_t port = ntohs(c->addr.sin_port);
+    char ip[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &(c->addr.sin_addr), ip, INET_ADDRSTRLEN);
+
+    char buf[256];
+    size_t len = sprintf(buf, "fd=%d %s:%d", c->fd, ip, port); 
+    
+    write_bulk_string(conn, (uint8_t *)buf, len);
+  }
+}
+
+void cmd_mget(State *state, Conn *conn, CmdArgs *args) {
+  struct hashmap *db = state->dbs[conn->db];
+  write_array_header(conn, args->argc - 1);
+  for (size_t i = 1; i < args->argc; i++) {
+    uint8_t *key = args->buf + args->offsets[i];
+    size_t keylen = args->lens[i];
+
+    Entry *entry = (Entry *)hashmap_get(db, &(Entry){.key = key, .keylen = keylen});
+    if (entry) {
+      write_bulk_string(conn, entry->val, entry->vallen);
+    } else {
+      write_null_bulk_string(conn);
+    }
+  }
+}
+
+void cmd_mset(State *state, Conn *conn, CmdArgs *args) {
+  if (args->argc % 2 != 1) {
+    write_simple_generic_error(conn, "wrong number of arguments for MSET");
+    return;
+  }
+
+  struct hashmap *db = state->dbs[conn->db];
+  for (size_t i = 1; i < args->argc; i += 2) {
+    size_t keylen = args->lens[i];
+    uint8_t *key = (uint8_t*)malloc(keylen);
+    memcpy((void *)key, args->buf + args->offsets[i], keylen);
+
+    size_t vallen = args->lens[i + 1];
+    uint8_t *val = (uint8_t*)malloc(vallen);
+    memcpy((void *)val, args->buf + args->offsets[i + 1], vallen);
+
+    Entry *entry = &(Entry){.key = key, .keylen = keylen, .val = val, .vallen = vallen};
+    Entry *existing = (Entry *)hashmap_set(db, entry);
+    if (existing) {
+      entry_free((void*)existing);
+    }
+  }
+
+  write_simple_string(conn, "OK", 2);
 }

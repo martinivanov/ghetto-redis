@@ -4,6 +4,8 @@
 #include "state.h"
 #include "hashmap.h"
 
+#define VAR_ARGC (size_t)-1
+
 typedef void (*command_func)(State *state, Conn* conn, CmdArgs* args);
 
 typedef struct {
@@ -32,5 +34,8 @@ void cmd_incr(State *state, Conn *conn, CmdArgs *args);
 void cmd_decr(State *state, Conn *conn, CmdArgs *args);
 void cmd_incrby(State *state, Conn *conn, CmdArgs *args);
 void cmd_decrby(State *state, Conn *conn, CmdArgs *args);
+void cmd_clients(State *state, Conn *conn, CmdArgs *args);
+void cmd_mget(State *state, Conn *conn, CmdArgs *args);
+void cmd_mset(State *state, Conn *conn, CmdArgs *args);
 
 #endif
