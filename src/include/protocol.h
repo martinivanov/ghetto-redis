@@ -9,7 +9,7 @@
 #include "deque.h"
 
 #define MESSAGE_MAX_LENGTH 8192
-#define MAX_ARGC 64
+#define MAX_ARGC 4
 
 enum State {
     REQUEST = 1 << 0,
@@ -19,9 +19,10 @@ enum State {
 };
 
 typedef enum {
-  PARSE_OK = 0,
-  PARSE_ERROR = 1,
-  PARSE_INCOMPLETE = 2,
+  PARSE_OK,
+  PARSE_ERROR,
+  PARSE_ERROR_INVALID_ARGC,
+  PARSE_INCOMPLETE,
 } ParseError;
 
 typedef struct {

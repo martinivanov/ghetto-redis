@@ -19,7 +19,7 @@ struct hashmap* init_commands();
 void free_commands(struct hashmap* commands);
 void register_command(struct hashmap* commands, const char* name, size_t arity, command_func func);
 
-command_func get_command(const uint8_t *cmd, size_t cmdlen);
+Command* lookup_command(CmdArgs *CmdArgs, struct hashmap* commands);
 
 void cmd_ping(State *state, Conn *conn, CmdArgs *args);
 void cmd_echo(State *state, Conn *conn, CmdArgs *args);

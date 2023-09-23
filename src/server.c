@@ -193,15 +193,15 @@ void state_response(Conn *conn) {
 }
 
 void handle_command(State *state, Conn *conn, CmdArgs *args) {
-  uint8_t *cmd_name = args->buf + args->offsets[0];
-  size_t cmd_name_len = args->lens[0];
-  Command *cmd = (Command *)hashmap_get(state->commands, &(Command){.name = cmd_name, .name_len = cmd_name_len});
+  Command *cmd = lookup_command(args, state->commands);
   
   if (cmd == NULL) {
-    char message[64];
-    char *first_arg =
-        args->argc > 1 ? (char *)&cmd_name[args->offsets[1]] : "";
+    uint8_t *p = args->buf;
+    char *cmd_name = (char *)&p[args->offsets[0]];
+    size_t cmd_name_len = args->lens[0];
+    char *first_arg = args->argc > 1 ? (char *)&p[args->offsets[1]] : "";
     size_t first_arg_len = args->argc > 1 ? args->lens[1] : 0;
+    char message[1024];
     snprintf(message, sizeof(message),
              "unknown command '%.*s', with args beginning with: '%.*s'",
              (int)cmd_name_len, cmd_name, (int)first_arg_len, first_arg);
@@ -211,9 +211,7 @@ void handle_command(State *state, Conn *conn, CmdArgs *args) {
 
   if (cmd->arity != args->argc - 1 && cmd->arity != VAR_ARGC) {
     char message[64];
-    snprintf(message, sizeof(message),
-             "wrong number of arguments for '%.*s' command", (int)cmd_name_len,
-             cmd_name);
+    snprintf(message, sizeof(message), "wrong number of arguments for '%.*s' command", (int)cmd->name_len, cmd->name);
     write_simple_generic_error(conn, message);
     return;
   }
@@ -235,14 +233,19 @@ bool try_handle_request(State *state, Conn *conn) {
     err = parse_inline_request(conn, &args);
   }
 
-  if (err == PARSE_ERROR) {
-    write_simple_generic_error(conn, "parse error");
-    conn->state = END;
-    return false;
-  }
-
-  if (err == PARSE_INCOMPLETE) {
-    return false;
+  switch (err) {
+    case PARSE_OK:
+      break;
+    case PARSE_INCOMPLETE:
+      return false;
+    case PARSE_ERROR:
+      write_simple_generic_error(conn, "parse error");
+      conn->state = END;
+      return false;
+    case PARSE_ERROR_INVALID_ARGC:
+      write_simple_generic_error(conn, "invalid argc");
+      conn->state = END;
+      return false;
   }
 
 #ifdef DEBUG

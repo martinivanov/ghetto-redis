@@ -11,6 +11,19 @@
 
 typedef void (*command_func)(State *state, Conn* conn, CmdArgs* args);
 
+inline Command* lookup_command(CmdArgs *CmdArgs, struct hashmap* commands) {
+  Command *cmd = &(Command) {
+    .name_len = CmdArgs->lens[0],
+    .name = CmdArgs->buf + CmdArgs->offsets[0]
+  };
+
+  Command *found = hashmap_get(commands, cmd);
+  if (found) {
+    return found;
+  }
+  return NULL;
+}
+
 int command_compare(const void *a, const void *b, void *udata) {
   (void)(udata);
 

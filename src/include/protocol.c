@@ -108,7 +108,7 @@ ParseError parse_resp_request(Conn *conn, CmdArgs *args) {
   }
 
   if (args->argc > MAX_ARGC) {
-    return PARSE_ERROR;
+    return PARSE_ERROR_INVALID_ARGC;
   }
 
   if (cur + sizeof(CRLF) > end) {
@@ -184,7 +184,7 @@ ParseError parse_inline_request(Conn *conn, CmdArgs *args) {
     } else {
       if (!in_arg) {
         if (args->argc == MAX_ARGC) {
-          return PARSE_ERROR;
+          return PARSE_ERROR_INVALID_ARGC;
         }
         offset = i;
         len = 0;
