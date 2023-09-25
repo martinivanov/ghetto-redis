@@ -193,7 +193,7 @@ void state_response(Conn *conn) {
 }
 
 void handle_command(State *state, Conn *conn, CmdArgs *args) {
-  Command *cmd = lookup_command(args, state->commands);
+  const Command *cmd = lookup_command(args, state->commands);
   
   if (cmd == NULL) {
     uint8_t *p = args->buf;

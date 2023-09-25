@@ -9,7 +9,7 @@
 #include "deque.h"
 
 #define MESSAGE_MAX_LENGTH 8192
-#define MAX_ARGC 4
+#define MAX_ARGC 64
 
 enum State {
     REQUEST = 1 << 0,

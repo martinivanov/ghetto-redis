@@ -1,3 +1,4 @@
+#include <arpa/inet.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -9,18 +10,17 @@
 #include "protocol.h"
 #include "kv.h"
 
-typedef void (*command_func)(State *state, Conn* conn, CmdArgs* args);
-
-inline Command* lookup_command(CmdArgs *CmdArgs, struct hashmap* commands) {
+inline const Command* lookup_command(CmdArgs *CmdArgs, struct hashmap* commands) {
   Command *cmd = &(Command) {
     .name_len = CmdArgs->lens[0],
     .name = CmdArgs->buf + CmdArgs->offsets[0]
   };
 
-  Command *found = hashmap_get(commands, cmd);
+  const Command *found = hashmap_get(commands, cmd);
   if (found) {
     return found;
   }
+
   return NULL;
 }
 
@@ -78,26 +78,27 @@ void register_command(struct hashmap* commands, const char* name, size_t arity, 
   hashmap_set(commands, cmd);
 }
 
-void cmd_ping(State *state, Conn *conn, CmdArgs *args) {
+void cmd_ping(State *state, Conn *conn, const CmdArgs *args) {
   (void)state;
   (void)args;
   write_simple_string(conn, "PONG", 4);
 }
 
-void cmd_echo(State *state, Conn *conn, CmdArgs *args) {
+void cmd_echo(State *state, Conn *conn, const CmdArgs *args) {
   (void)state;
   const uint8_t *echo = args->buf + args->offsets[1];
   const size_t echolen = args->lens[1];
   write_bulk_string(conn, echo, echolen);
 }
-void cmd_quit(State *state, Conn *conn, CmdArgs *args) {
+
+void cmd_quit(State *state, Conn *conn, const CmdArgs *args) {
   (void)state;
   (void)args;
     conn->state = END;
     write_simple_string(conn, "OK", 2);
 }
 
-void cmd_get(State *state, Conn *conn, CmdArgs *args) {
+void cmd_get(State *state, Conn *conn, const CmdArgs *args) {
   const uint8_t *key = args->buf + args->offsets[1];
   const size_t keylen = args->lens[1];
 
@@ -110,7 +111,7 @@ void cmd_get(State *state, Conn *conn, CmdArgs *args) {
   }
 }
 
-void cmd_set(State *state, Conn *conn, CmdArgs *args) {
+void cmd_set(State *state, Conn *conn, const CmdArgs *args) {
     const size_t keylen = args->lens[1];
     const uint8_t *key = (uint8_t *)malloc(keylen);
     memcpy((void *)key, args->buf + args->offsets[1], keylen);
@@ -129,7 +130,7 @@ void cmd_set(State *state, Conn *conn, CmdArgs *args) {
     write_simple_string(conn, "OK", 2);
 }
 
-void cmd_del(State *state, Conn *conn, CmdArgs *args) {
+void cmd_del(State *state, Conn *conn, const CmdArgs *args) {
     const uint8_t *cmd = args->buf + args->offsets[0];
     const uint8_t *key = &cmd[args->offsets[1]];
     const size_t keylen = args->lens[1];
@@ -144,13 +145,13 @@ void cmd_del(State *state, Conn *conn, CmdArgs *args) {
     }
 }
 
-void cmd_shutdown(State *state, Conn *conn, CmdArgs *args) {
+void cmd_shutdown(State *state, Conn *conn, const CmdArgs *args) {
   (void)conn;
   (void)args;
   state->running = false;
 }
 
-void cmd_flushall(State *state, Conn *conn, CmdArgs *args) {
+void cmd_flushall(State *state, Conn *conn, const CmdArgs *args) {
   (void)args;
 
   for (size_t i = 0; i < state->num_dbs; i++) {
@@ -161,7 +162,7 @@ void cmd_flushall(State *state, Conn *conn, CmdArgs *args) {
   write_simple_string(conn, "OK", 2);
 }
 
-void cmd_select(State *state, Conn *conn, CmdArgs *args) {
+void cmd_select(State *state, Conn *conn, const CmdArgs *args) {
   (void)state;
 
   const uint8_t *cmd = args->buf + args->offsets[0];
@@ -220,7 +221,7 @@ bool try_parse_signed_integer(const uint8_t *buf, size_t len, int64_t *result) {
   return true;
 }
 
-void modify_counter(State *state, Conn *conn, CmdArgs *args, int64_t delta) {
+void modify_counter(State *state, Conn *conn, const CmdArgs *args, int64_t delta) {
   const size_t keylen = args->lens[1];
   const uint8_t *key = (uint8_t *)malloc(keylen);
   memcpy((void *)key, args->buf + args->offsets[1], keylen);
@@ -246,15 +247,15 @@ void modify_counter(State *state, Conn *conn, CmdArgs *args, int64_t delta) {
   write_integer(conn, val);
 }
 
-void cmd_incr(State *state, Conn *conn, CmdArgs *args) {
+void cmd_incr(State *state, Conn *conn, const CmdArgs *args) {
   modify_counter(state, conn, args, 1);
 }
 
-void cmd_decr(State *state, Conn *conn, CmdArgs *args) {
+void cmd_decr(State *state, Conn *conn, const CmdArgs *args) {
   modify_counter(state, conn, args, -1);
 }
 
-void cmd_incrby(State *state, Conn *conn, CmdArgs *args) {
+void cmd_incrby(State *state, Conn *conn, const CmdArgs *args) {
   int64_t delta = 0;
   if (!try_parse_signed_integer(args->buf + args->offsets[2], args->lens[2], &delta)) {
     write_simple_generic_error(conn, "value is not an integer or out of range");
@@ -269,7 +270,7 @@ void cmd_incrby(State *state, Conn *conn, CmdArgs *args) {
   modify_counter(state, conn, args, delta);
 }
 
-void cmd_decrby(State *state, Conn *conn, CmdArgs *args) {
+void cmd_decrby(State *state, Conn *conn, const CmdArgs *args) {
   int64_t delta = 0;
   if (!try_parse_signed_integer(args->buf + args->offsets[2], args->lens[2], &delta)) {
     write_simple_generic_error(conn, "value is not an integer or out of range");
@@ -284,7 +285,9 @@ void cmd_decrby(State *state, Conn *conn, CmdArgs *args) {
   modify_counter(state, conn, args, -delta);
 }
 
-void cmd_clients(State *state, Conn *conn, CmdArgs *args) {
+void cmd_clients(State *state, Conn *conn, const CmdArgs *args) {
+  (void)args;
+
   vector_Conn_ptr *conns = state->conns;
 
   size_t count = 0;
@@ -315,7 +318,7 @@ void cmd_clients(State *state, Conn *conn, CmdArgs *args) {
   }
 }
 
-void cmd_mget(State *state, Conn *conn, CmdArgs *args) {
+void cmd_mget(State *state, Conn *conn, const CmdArgs *args) {
   struct hashmap *db = state->dbs[conn->db];
   write_array_header(conn, args->argc - 1);
   for (size_t i = 1; i < args->argc; i++) {
@@ -331,7 +334,7 @@ void cmd_mget(State *state, Conn *conn, CmdArgs *args) {
   }
 }
 
-void cmd_mset(State *state, Conn *conn, CmdArgs *args) {
+void cmd_mset(State *state, Conn *conn, const CmdArgs *args) {
   if (args->argc % 2 != 1) {
     write_simple_generic_error(conn, "wrong number of arguments for MSET");
     return;
