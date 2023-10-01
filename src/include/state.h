@@ -9,6 +9,7 @@
 #include "vector_types.h"
 
 typedef struct {
+  size_t shard_id;
   vector_Conn_ptr *conns;
   Deque idle_conn_queue;
   Deque pending_writes_queue;

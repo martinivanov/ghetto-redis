@@ -1,4 +1,3 @@
-
 #include <asm-generic/errno-base.h>
 #include <asm-generic/socket.h>
 #include <assert.h>
@@ -16,6 +15,7 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #include "include/logging.h"
 #include "include/protocol.h"
@@ -411,13 +411,17 @@ uint64_t close_idle_connections(State *state) {
   return MAX_IDLE_MS; 
 }
 
-int main() {
-  State state;
-  init_server_state(&state, 16);
+void run_loop(void *arg) {
+  int shard_id = (int)(intptr_t)arg;
+  printf("shard_id=%d\n", shard_id);
 
   int fd_listener = socket(AF_INET, SOCK_STREAM, 0);
   int val = 1;
-  setsockopt(fd_listener, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
+  setsockopt(fd_listener, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
+  
+  State state;
+  init_server_state(&state, 16);
+  state.shard_id = shard_id;
 
   struct sockaddr_in addr = {
       .sin_family = AF_INET,
@@ -427,6 +431,7 @@ int main() {
 
   int rv = bind(fd_listener, (struct sockaddr *)&addr, sizeof(addr));
   if (rv) {
+    printf("errno=%d\n", errno);
     panic("bind()");
   }
 
@@ -448,6 +453,9 @@ int main() {
   struct epoll_event events[128];
   int timeout = -1;
   while (state.running) {
+
+    // execute callbacks
+
     flush_pending_writes(&state);
 
     nfds = epoll_wait(fd_epoll, events, 128, timeout);
@@ -497,7 +505,7 @@ int main() {
   }
 
   close(fd_listener);
-  
+
   for (size_t i = 0; i < capacity_vector_Conn_ptr(state.conns); i++) {
     Conn *conn = state.conns->array[i];
     if (conn) {
@@ -506,6 +514,19 @@ int main() {
   }
 
   free_server_state(&state);
+}
+
+const size_t NUM_THREADS = 4;
+
+int main() {
+  pthread_t threads[NUM_THREADS];
+  for (size_t i = 0; i < NUM_THREADS; i++) {
+    pthread_create(&threads[i], NULL, (void *(*)(void *))run_loop, (void *)i);
+  }
+
+  for (size_t i = 0; i < NUM_THREADS; i++) {
+    pthread_join(threads[i], NULL);
+  }
 
   return 0;
 }
