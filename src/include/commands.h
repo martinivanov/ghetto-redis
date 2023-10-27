@@ -8,6 +8,7 @@
 #define VAR_ARGC (size_t)-1
 
 typedef void (*command_func)(Shard *shard, Conn* conn, const CmdArgs* args);
+typedef void (*dispatch_cb)(void *ctx);
 
 typedef struct {
     size_t name_len;
@@ -17,41 +18,46 @@ typedef struct {
 } Command;
 
 typedef struct {
-  void (*cb)(void *);
-} Callback;
+  Shard *src;
+  Shard *dst;
+  Conn *conn;
+  dispatch_cb cb;
+} CBContext;
 
 typedef struct {
-  Callback base;
-  Shard *original_shard;
-  Shard *target_shard;
-  Conn *conn;
-  uint8_t *key;
-  size_t keylen;
+    CBContext base;
+    uint8_t *key;
+    size_t keylen;
+    uint64_t hash;
+} KeyedCBContext;
+
+typedef struct {
+  KeyedCBContext ctx;
 } GetShardReq;
 
 typedef struct {
-  Callback base;
-  Shard *shard;
-  Conn *conn;
+  CBContext ctx;
   Entry *entry;
 } GetShardResp;
 
 typedef struct {
-  Callback base;
-  Shard *original_shard;
-  Shard *target_shard;
-  Conn *conn;
-  uint8_t *key;
-  size_t keylen;
+  KeyedCBContext ctx;
   uint8_t *val;
   size_t vallen;
 } SetShardReq;
 
 typedef struct {
-  Callback base;
-  Shard *shard;
-  Conn *conn;
+  CBContext ctx;
 } SimpleOKResp;
+
+typedef struct {
+  KeyedCBContext ctx;
+} DelShardReq;
+
+typedef struct {
+  CBContext ctx;
+  int64_t val;
+} IntegerResp;
 
 struct hashmap* init_commands();
 void free_commands(struct hashmap* commands);

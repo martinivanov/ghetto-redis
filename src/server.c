@@ -462,12 +462,12 @@ void run_loop(void *arg) {
   struct epoll_event events[128];
   int timeout = -1;
   while (shard->gr_state->running) {
-    Callback *cb = mpscq_dequeue(shard->cb_queue);
-    while (cb != NULL) {
-      void *arg = cb;
-      cb->cb(arg);
-      free(cb);
-      cb = mpscq_dequeue(shard->cb_queue);
+    CBContext *ctx = mpscq_dequeue(shard->cb_queue);
+    while (ctx != NULL) {
+      void *arg = ctx;
+      ctx->cb(arg);
+      free(ctx);
+      ctx = mpscq_dequeue(shard->cb_queue);
     }
 
     flush_pending_writes(shard);
