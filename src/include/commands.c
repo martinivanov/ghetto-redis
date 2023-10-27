@@ -98,21 +98,6 @@ void cmd_quit(Shard *shard, Conn *conn, const CmdArgs *args) {
     write_simple_string(conn, "OK", 2);
 }
 
-
-
-typedef struct {
-  Shard *original_shard;
-  Shard *target_shard;
-  Conn *conn;
-  CmdArgs *args;
-} GetShardReq;
-
-typedef struct {
-  Shard *shard;
-  Conn *conn;
-  Entry *entry;
-} GetShardResp;
-
 void cmd_get_shard_resp_cb(GetShardResp *resp) {
   printf("[%d]cmd_get_shard_resp_cb Conn fd: %d\n", resp->shard->shard_id, resp->conn->fd);
   Conn *conn = resp->conn;
@@ -123,7 +108,6 @@ void cmd_get_shard_resp_cb(GetShardResp *resp) {
     write_null_bulk_string(conn);
   }
   deque_push_back_and_attach(resp->shard->pending_writes_queue, conn, Conn, pending_writes_queue_node);
-  free(resp);
 }
 
 void cmd_get_shard_req_cb(GetShardReq *req) {
@@ -131,14 +115,13 @@ void cmd_get_shard_req_cb(GetShardReq *req) {
   struct hashmap *db = req->target_shard->dbs[req->conn->db];
   Entry *entry = (Entry *)hashmap_get(db, &(Entry){.key = req->args->buf + req->args->offsets[1], .keylen = req->args->lens[1]});
   GetShardResp *resp = (GetShardResp *)malloc(sizeof(GetShardResp));
+  resp->base.cb = (void (*)(void *))cmd_get_shard_resp_cb;
   resp->shard = req->original_shard;
   resp->conn = req->conn;
   resp->entry = entry;
-  Callback *cb = (Callback *)malloc(sizeof(Callback));
-  cb->arg = resp;
-  cb->cb = (void (*)(void *))cmd_get_shard_resp_cb;
-  mpscq_enqueue(req->original_shard->cb_queue, cb);
+  mpscq_enqueue(req->original_shard->cb_queue, resp);
   write(req->original_shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
+  free(req->args);
 }
 
 void cmd_get(Shard *shard, Conn *conn, const CmdArgs *args) {
@@ -163,14 +146,12 @@ void cmd_get(Shard *shard, Conn *conn, const CmdArgs *args) {
     memcpy(cmd_args, args, sizeof(CmdArgs));
     Shard *target_shard = &gr_state->shards[shard_id];
     GetShardReq *req = (GetShardReq *)malloc(sizeof(GetShardReq));
+    req->base.cb = (void (*)(void *))cmd_get_shard_req_cb;
     req->original_shard = shard;
     req->target_shard = target_shard;
     req->conn = conn;
     req->args = cmd_args;
-    Callback *cb = (Callback *)malloc(sizeof(Callback));
-    cb->arg = req;
-    cb->cb = (void (*)(void *))cmd_get_shard_req_cb;
-    mpscq_enqueue(target_shard->cb_queue, cb);
+    mpscq_enqueue(target_shard->cb_queue, req);
     write(target_shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
   }
 }

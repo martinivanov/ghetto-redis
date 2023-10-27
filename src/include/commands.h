@@ -3,6 +3,7 @@
 
 #include "state.h"
 #include "hashmap.h"
+#include "kv.h"
 
 #define VAR_ARGC (size_t)-1
 
@@ -14,6 +15,25 @@ typedef struct {
     size_t arity;
     command_func func;
 } Command;
+
+typedef struct {
+  void (*cb)(void *);
+} Callback;
+
+typedef struct {
+  Callback base;
+  Shard *original_shard;
+  Shard *target_shard;
+  Conn *conn;
+  CmdArgs *args;
+} GetShardReq;
+
+typedef struct {
+  Callback base;
+  Shard *shard;
+  Conn *conn;
+  Entry *entry;
+} GetShardResp;
 
 struct hashmap* init_commands();
 void free_commands(struct hashmap* commands);

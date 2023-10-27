@@ -464,10 +464,9 @@ void run_loop(void *arg) {
   while (shard->gr_state->running) {
     Callback *cb = mpscq_dequeue(shard->cb_queue);
     while (cb != NULL) {
-      void *arg = cb->arg;
+      void *arg = cb;
       cb->cb(arg);
-      //free(cb);
-      //free(arg);
+      free(cb);
       cb = mpscq_dequeue(shard->cb_queue);
     }
 

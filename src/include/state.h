@@ -30,9 +30,5 @@ struct GRState {
   Shard *shards;
 };
 
-typedef struct {
-  void (*cb)(void *);
-  void *arg;
-} Callback;
 
 #endif
