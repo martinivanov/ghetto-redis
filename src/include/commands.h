@@ -25,7 +25,8 @@ typedef struct {
   Shard *original_shard;
   Shard *target_shard;
   Conn *conn;
-  CmdArgs *args;
+  uint8_t *key;
+  size_t keylen;
 } GetShardReq;
 
 typedef struct {
@@ -34,6 +35,23 @@ typedef struct {
   Conn *conn;
   Entry *entry;
 } GetShardResp;
+
+typedef struct {
+  Callback base;
+  Shard *original_shard;
+  Shard *target_shard;
+  Conn *conn;
+  uint8_t *key;
+  size_t keylen;
+  uint8_t *val;
+  size_t vallen;
+} SetShardReq;
+
+typedef struct {
+  Callback base;
+  Shard *shard;
+  Conn *conn;
+} SimpleOKResp;
 
 struct hashmap* init_commands();
 void free_commands(struct hashmap* commands);
