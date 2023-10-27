@@ -98,16 +98,80 @@ void cmd_quit(Shard *shard, Conn *conn, const CmdArgs *args) {
     write_simple_string(conn, "OK", 2);
 }
 
-void cmd_get(Shard *shard, Conn *conn, const CmdArgs *args) {
-  const uint8_t *key = args->buf + args->offsets[1];
-  const size_t keylen = args->lens[1];
 
-  struct hashmap *db = shard->dbs[conn->db];
-  Entry *entry = (Entry *)hashmap_get(db, &(Entry){.key = key, .keylen = keylen});
+
+typedef struct {
+  Shard *original_shard;
+  Shard *target_shard;
+  Conn *conn;
+  CmdArgs *args;
+} GetShardReq;
+
+typedef struct {
+  Shard *shard;
+  Conn *conn;
+  Entry *entry;
+} GetShardResp;
+
+void cmd_get_shard_resp_cb(GetShardResp *resp) {
+  printf("[%d]cmd_get_shard_resp_cb Conn fd: %d\n", resp->shard->shard_id, resp->conn->fd);
+  Conn *conn = resp->conn;
+  Entry *entry = resp->entry;
   if (entry) {
     write_bulk_string(conn, entry->val, entry->vallen);
   } else {
     write_null_bulk_string(conn);
+  }
+  deque_push_back_and_attach(resp->shard->pending_writes_queue, conn, Conn, pending_writes_queue_node);
+  free(resp);
+}
+
+void cmd_get_shard_req_cb(GetShardReq *req) {
+  printf("[%d]cmd_get_shard_req_cb\n", req->target_shard->shard_id);
+  struct hashmap *db = req->target_shard->dbs[req->conn->db];
+  Entry *entry = (Entry *)hashmap_get(db, &(Entry){.key = req->args->buf + req->args->offsets[1], .keylen = req->args->lens[1]});
+  GetShardResp *resp = (GetShardResp *)malloc(sizeof(GetShardResp));
+  resp->shard = req->original_shard;
+  resp->conn = req->conn;
+  resp->entry = entry;
+  Callback *cb = (Callback *)malloc(sizeof(Callback));
+  cb->arg = resp;
+  cb->cb = (void (*)(void *))cmd_get_shard_resp_cb;
+  mpscq_enqueue(req->original_shard->cb_queue, cb);
+  write(req->original_shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
+}
+
+void cmd_get(Shard *shard, Conn *conn, const CmdArgs *args) {
+  const GRState *gr_state = shard->gr_state;
+  const uint8_t *key = args->buf + args->offsets[1];
+  const size_t keylen = args->lens[1];
+  const uint64_t hash = hashmap_xxhash3(key, keylen, 0, 0);
+
+  size_t shard_id = hash % gr_state->num_shards;
+
+  //if (shard_id == shard->shard_id) {
+  if (false) {
+    struct hashmap *db = shard->dbs[conn->db];
+    Entry *entry = (Entry *)hashmap_get(db, &(Entry){.key = key, .keylen = keylen});
+    if (entry) {
+      write_bulk_string(conn, entry->val, entry->vallen);
+    } else {
+      write_null_bulk_string(conn);
+    }
+  } else {
+    CmdArgs *cmd_args = (CmdArgs *)malloc(sizeof(CmdArgs));
+    memcpy(cmd_args, args, sizeof(CmdArgs));
+    Shard *target_shard = &gr_state->shards[shard_id];
+    GetShardReq *req = (GetShardReq *)malloc(sizeof(GetShardReq));
+    req->original_shard = shard;
+    req->target_shard = target_shard;
+    req->conn = conn;
+    req->args = cmd_args;
+    Callback *cb = (Callback *)malloc(sizeof(Callback));
+    cb->arg = req;
+    cb->cb = (void (*)(void *))cmd_get_shard_req_cb;
+    mpscq_enqueue(target_shard->cb_queue, cb);
+    write(target_shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
   }
 }
 
@@ -150,6 +214,10 @@ void cmd_shutdown(Shard *shard, Conn *conn, const CmdArgs *args) {
   (void)args;
   GRState *gr_state = shard->gr_state;
   gr_state->running = false;
+  for (size_t i = 0; i < gr_state->num_shards; i++) {
+    Shard *s = &gr_state->shards[i];
+    write(s->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
+  }
 }
 
 void cmd_flushall(Shard *shard, Conn *conn, const CmdArgs *args) {

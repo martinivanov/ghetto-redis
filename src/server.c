@@ -2,6 +2,7 @@
 #include <asm-generic/socket.h>
 #include <assert.h>
 #include <errno.h>
+#include <sys/eventfd.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <stdbool.h>
@@ -45,6 +46,15 @@ void init_shards(GRState *gr_state) {
     deque_init(&shard->idle_conn_queue);
     deque_init(&shard->pending_writes_queue);
 
+    int queue_efd = eventfd(0, 0);
+    if (queue_efd == -1) {
+      perror("eventfd()");
+      exit(1);
+    }
+
+    shard->queue_efd = queue_efd;
+    shard->cb_queue = mpscq_create(NULL, 1024);
+
     int seed = time(NULL);
     shard->dbs = (struct hashmap **)malloc(sizeof(struct hashmap *) * gr_state->num_dbs);
     for (size_t j = 0; j < gr_state->num_dbs; j++) {
@@ -64,6 +74,8 @@ void free_server_state(GRState *gr_state) {
     free(shard->dbs);
     free_vector_Conn_ptr(shard->conns);
     free(shard->conns);
+    mpscq_destroy(shard->cb_queue);
+    close(shard->queue_efd);
   }
   hashmap_free(gr_state->commands);
 }
@@ -444,12 +456,20 @@ void run_loop(void *arg) {
   epoll_register(fd_epoll, fd_listener, EPOLLIN);
   printf("listening\n");
 
+  epoll_register(fd_epoll, shard->queue_efd, EPOLLIN);
+
   int nfds = 0;
   struct epoll_event events[128];
   int timeout = -1;
   while (shard->gr_state->running) {
-
-    // execute callbacks
+    Callback *cb = mpscq_dequeue(shard->cb_queue);
+    while (cb != NULL) {
+      void *arg = cb->arg;
+      cb->cb(arg);
+      //free(cb);
+      //free(arg);
+      cb = mpscq_dequeue(shard->cb_queue);
+    }
 
     flush_pending_writes(shard);
 
@@ -466,10 +486,15 @@ void run_loop(void *arg) {
           panic("accept_new_conn()");
         }
         epoll_register(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
+      } else if (events[i].data.fd == shard->queue_efd) {
+        // skip
       } else {
         struct epoll_event ev = events[i];
         int fd = ev.data.fd;
         Conn *conn = shard->conns->array[fd];
+
+        printf("Conn %d: events=%d\n", fd, ev.events);
+        printf("Conn %d: state=%d\n", fd, conn->state);
 
         conn->idle_start = get_monotonic_usec();
         deque_move_to_back(&shard->idle_conn_queue, conn->idle_conn_queue_node);
@@ -509,7 +534,7 @@ void run_loop(void *arg) {
   }
 }
 
-const size_t NUM_THREADS = 1;
+const size_t NUM_THREADS = 4;
 
 int main() {
   Shard shards[NUM_THREADS];

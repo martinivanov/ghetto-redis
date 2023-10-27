@@ -7,7 +7,7 @@ BUILD = debug
 CFLAGS.release = -O3 -flto
 CFLAGS.debug = -O0 -ggdb -DDEBUG -fsanitize=address
 CFLAGS.profile = -O0 -g -pg
-CFLAGS=-Wall -Wextra -Wno-gnu -pthread -std=gnu2x ${CFLAGS.${BUILD}}
+CFLAGS=-Wall -Wextra -Wno-gnu -pthread -std=c17 ${CFLAGS.${BUILD}}
 
 SOURCES=$(wildcard src/*.c) $(wildcard src/**/*.c) $(wildcard src/include/**/*.c)
 

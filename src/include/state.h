@@ -31,8 +31,8 @@ struct GRState {
 };
 
 typedef struct {
-  void *arg;
   void (*cb)(void *);
+  void *arg;
 } Callback;
 
 #endif
