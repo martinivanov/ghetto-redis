@@ -492,9 +492,6 @@ void run_loop(void *arg) {
         int fd = ev.data.fd;
         Conn *conn = shard->conns->array[fd];
 
-        printf("Conn %d: events=%d\n", fd, ev.events);
-        printf("Conn %d: state=%d\n", fd, conn->state);
-
         conn->idle_start = get_monotonic_usec();
         deque_move_to_back(&shard->idle_conn_queue, conn->idle_conn_queue_node);
         if (ev.events & EPOLLIN) {
