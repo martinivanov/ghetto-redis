@@ -31,43 +31,41 @@
 #define unlikely(expr) __builtin_expect(!!(expr), 0)
 #define likely(expr) __builtin_expect(!!(expr), 1)
 
-void init_server_state(State *state, size_t num_dbs) {
-  vector_Conn_ptr *conns = (vector_Conn_ptr*)malloc(sizeof(vector_Conn_ptr));
-  init_vector_Conn_ptr(conns, 128);
-  for (size_t i = 0; i < capacity_vector_Conn_ptr(conns); i++) {
-    conns->array[i] = NULL;
+void init_shards(GRState *gr_state) {
+  Shard *shards = gr_state->shards;
+  for (size_t i = 0; i < gr_state->num_shards; i++) {
+    Shard *shard = &shards[i];
+    shard->shard_id = i;
+    shard->conns = (vector_Conn_ptr *)malloc(sizeof(vector_Conn_ptr));
+    init_vector_Conn_ptr(shard->conns, 128);
+    for (size_t j = 0; j < capacity_vector_Conn_ptr(shard->conns); j++) {
+      shard->conns->array[j] = NULL;
+    }
+
+    deque_init(&shard->idle_conn_queue);
+    deque_init(&shard->pending_writes_queue);
+
+    int seed = time(NULL);
+    shard->dbs = (struct hashmap **)malloc(sizeof(struct hashmap *) * gr_state->num_dbs);
+    for (size_t j = 0; j < gr_state->num_dbs; j++) {
+      shard->dbs[j] = hashmap_new(sizeof(Entry), 1 << 20, seed, seed, entry_hash_xxhash3, entry_compare, entry_free, NULL);
+    }
+
+    shard->gr_state = gr_state;
   }
-
-  state->conns = conns;
-
-  deque_init(&state->idle_conn_queue);
-  deque_init(&state->pending_writes_queue);
-
-  int seed = time(NULL);
-  state->num_dbs = num_dbs;
-  state->dbs = (struct hashmap **)malloc(sizeof(struct hashmap *) * num_dbs);
-  for (size_t i = 0; i < num_dbs; i++) {
-    state->dbs[i] = hashmap_new(sizeof(Entry), 1 << 20, seed, seed, entry_hash_xxhash3, entry_compare, entry_free, NULL);
-  }
-
-  state->running = true;
-
-  state->commands = init_commands();
 }
 
-void free_server_state(State *state) {
-  for (size_t i = 0; i < state->num_dbs; i++) {
-    hashmap_free(state->dbs[i]);
+void free_server_state(GRState *gr_state) {
+  for (size_t i = 0; i < gr_state->num_shards; i++) {
+    Shard *shard = &gr_state->shards[i];
+    for (size_t j = 0; j < gr_state->num_dbs; j++) {
+      hashmap_free(shard->dbs[j]);
+    }
+    free(shard->dbs);
+    free_vector_Conn_ptr(shard->conns);
+    free(shard->conns);
   }
-  free(state->dbs);
-  state->dbs = NULL;
-  free_vector_Conn_ptr(state->conns);
-  free(state->conns);
-  state->conns = NULL;
-  free_commands(state->commands);
-
-  deque_destroy(&state->idle_conn_queue);
-  deque_destroy(&state->pending_writes_queue);
+  hashmap_free(gr_state->commands);
 }
 
 static void fd_set_nb(int fd) {
@@ -113,7 +111,7 @@ static uint64_t get_monotonic_usec() {
   return tv.tv_sec * 1000000 + tv.tv_nsec / 1000;
 }
 
-int32_t accept_new_conn(State *state, int fd_listener) {
+int32_t accept_new_conn(Shard *shard, int fd_listener) {
   struct sockaddr_in client_addr = {};
   socklen_t socklen = sizeof(client_addr);
   int client_fd = accept(fd_listener, (struct sockaddr *)&client_addr, &socklen);
@@ -142,8 +140,8 @@ int32_t accept_new_conn(State *state, int fd_listener) {
 
   client->idle_start = get_monotonic_usec();
 
-  conn_put(state->conns, client);
-  deque_push_back_and_attach(state->idle_conn_queue, client, Conn, idle_conn_queue_node);
+  conn_put(shard->conns, client);
+  deque_push_back_and_attach(shard->idle_conn_queue, client, Conn, idle_conn_queue_node);
 
   return client_fd;
 }
@@ -192,8 +190,8 @@ void state_response(Conn *conn) {
   }
 }
 
-void handle_command(State *state, Conn *conn, CmdArgs *args) {
-  const Command *cmd = lookup_command(args, state->commands);
+void handle_command(Shard *shard, Conn *conn, CmdArgs *args) {
+  const Command *cmd = lookup_command(args, shard->gr_state->commands);
   
   if (cmd == NULL) {
     uint8_t *p = args->buf;
@@ -216,10 +214,10 @@ void handle_command(State *state, Conn *conn, CmdArgs *args) {
     return;
   }
 
-  cmd->func(state, conn, args);
+  cmd->func(shard, conn, args);
 }
 
-bool try_handle_request(State *state, Conn *conn) {
+bool try_handle_request(Shard *shard, Conn *conn) {
   if (unlikely(conn->recv_buf_size < 1)) {
     return false;
   }
@@ -259,7 +257,7 @@ bool try_handle_request(State *state, Conn *conn) {
 #endif
 
   if (likely(args.argc > 0)) {
-    handle_command(state, conn, &args);
+    handle_command(shard, conn, &args);
   }
 
   if (unlikely(conn->state == END)) {
@@ -281,7 +279,7 @@ bool try_handle_request(State *state, Conn *conn) {
   return conn->recv_buf_size > 0;
 }
 
-bool try_fill_buffer(State *state, Conn *conn) {
+bool try_fill_buffer(Shard *shard, Conn *conn) {
   assert(conn->recv_buf_size < sizeof(conn->recv_buf));
 
   ssize_t rv = 0;
@@ -325,25 +323,25 @@ bool try_fill_buffer(State *state, Conn *conn) {
   conn->recv_buf_size += (size_t)rv;
   assert(conn->recv_buf_size <= sizeof(conn->recv_buf));
 
-  while (try_handle_request(state, conn)) {
+  while (try_handle_request(shard, conn)) {
   }
 
   bool test = (conn->state == END);
   return test;
 }
 
-void state_request(State *state, Conn *conn) {
-  while (try_fill_buffer(state, conn)) {
+void state_request(Shard *shard, Conn *conn) {
+  while (try_fill_buffer(shard, conn)) {
   }
 }
 
-void conn_done(State *state, Conn *conn) {
+void conn_done(Shard *shard, Conn *conn) {
   close(conn->fd);
-  deque_detach(&state->pending_writes_queue, conn->pending_writes_queue_node);
+  deque_detach(&shard->pending_writes_queue, conn->pending_writes_queue_node);
   free(conn->pending_writes_queue_node);
-  deque_detach(&state->idle_conn_queue, conn->idle_conn_queue_node);
+  deque_detach(&shard->idle_conn_queue, conn->idle_conn_queue_node);
   free(conn->idle_conn_queue_node);
-  state->conns->array[conn->fd] = NULL;
+  shard->conns->array[conn->fd] = NULL;
   free(conn);
   conn = NULL;
 }
@@ -378,9 +376,9 @@ void epoll_modify(int fd_epoll, int fd, uint32_t events) {
   }
 }
 
-void flush_pending_writes(State *state) {
-    while (!deque_is_empty(&state->pending_writes_queue)) {
-      Conn *conn = deque_pop_front(&state->pending_writes_queue);
+void flush_pending_writes(Shard *shard) {
+    while (!deque_is_empty(&shard->pending_writes_queue)) {
+      Conn *conn = deque_pop_front(&shard->pending_writes_queue);
       if (conn == NULL) {
         continue;
       }
@@ -391,9 +389,9 @@ void flush_pending_writes(State *state) {
 
 #define MAX_IDLE_MS 5000
 
-uint64_t close_idle_connections(State *state) {
+uint64_t close_idle_connections(Shard *shard) {
   uint64_t now_us = get_monotonic_usec();
-  Deque *queue = &state->idle_conn_queue;
+  Deque *queue = &shard->idle_conn_queue;
   while (!deque_is_empty(queue)) {
     Conn *conn = queue->head->data;
     if (conn == NULL) {
@@ -402,7 +400,7 @@ uint64_t close_idle_connections(State *state) {
 
     uint64_t elapsed = (now_us - conn->idle_start) / 1000;
     if (elapsed > MAX_IDLE_MS) {
-      conn_done(state, conn);
+      conn_done(shard, conn);
     } else {
       return MAX_IDLE_MS - elapsed;
     }
@@ -412,17 +410,14 @@ uint64_t close_idle_connections(State *state) {
 }
 
 void run_loop(void *arg) {
-  int shard_id = (int)(intptr_t)arg;
-  printf("shard_id=%d\n", shard_id);
+  Shard *shard = (Shard*)arg;
+
+  printf("shard_id=%zu\n", shard->shard_id);
 
   int fd_listener = socket(AF_INET, SOCK_STREAM, 0);
   int val = 1;
   setsockopt(fd_listener, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
   
-  State state;
-  init_server_state(&state, 16);
-  state.shard_id = shard_id;
-
   struct sockaddr_in addr = {
       .sin_family = AF_INET,
       .sin_port = ntohs(1337),
@@ -452,11 +447,11 @@ void run_loop(void *arg) {
   int nfds = 0;
   struct epoll_event events[128];
   int timeout = -1;
-  while (state.running) {
+  while (shard->gr_state->running) {
 
     // execute callbacks
 
-    flush_pending_writes(&state);
+    flush_pending_writes(shard);
 
     nfds = epoll_wait(fd_epoll, events, 128, timeout);
     if (nfds == -1) {
@@ -466,7 +461,7 @@ void run_loop(void *arg) {
 
     for (int i = 0; i < nfds; i++) {
       if (events[i].data.fd == fd_listener) {
-        int fd = accept_new_conn(&state, fd_listener);
+        int fd = accept_new_conn(shard, fd_listener);
         if (fd < 0) {
           panic("accept_new_conn()");
         }
@@ -474,12 +469,12 @@ void run_loop(void *arg) {
       } else {
         struct epoll_event ev = events[i];
         int fd = ev.data.fd;
-        Conn *conn = state.conns->array[fd];
+        Conn *conn = shard->conns->array[fd];
 
         conn->idle_start = get_monotonic_usec();
-        deque_move_to_back(&state.idle_conn_queue, conn->idle_conn_queue_node);
+        deque_move_to_back(&shard->idle_conn_queue, conn->idle_conn_queue_node);
         if (ev.events & EPOLLIN) {
-          state_request(&state, conn);
+          state_request(shard, conn);
         } else if (ev.events & EPOLLOUT) {
           state_response(conn);
           epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
@@ -487,10 +482,10 @@ void run_loop(void *arg) {
 
         if (conn->state == END || ev.events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
           epoll_unregister(fd_epoll, fd);
-          conn_done(&state, conn);
+          conn_done(shard, conn);
         } else {
           if (conn->send_buf_size != conn->send_buf_sent) {
-            deque_push_back_and_attach(state.pending_writes_queue, conn, Conn, pending_writes_queue_node);
+            deque_push_back_and_attach(shard->pending_writes_queue, conn, Conn, pending_writes_queue_node);
           }
 
           if (conn->state & BLOCKED) {
@@ -501,32 +496,44 @@ void run_loop(void *arg) {
       }
     }
 
-    timeout = close_idle_connections(&state);
+    timeout = close_idle_connections(shard);
   }
 
   close(fd_listener);
 
-  for (size_t i = 0; i < capacity_vector_Conn_ptr(state.conns); i++) {
-    Conn *conn = state.conns->array[i];
+  for (size_t i = 0; i < capacity_vector_Conn_ptr(shard->conns); i++) {
+    Conn *conn = shard->conns->array[i];
     if (conn) {
-      conn_done(&state, conn);
+      conn_done(shard, conn);
     }
   }
-
-  free_server_state(&state);
 }
 
-const size_t NUM_THREADS = 4;
+const size_t NUM_THREADS = 1;
 
 int main() {
+  Shard shards[NUM_THREADS];
+  GRState gr_state = {
+    .running = true,
+    .num_dbs = 16,
+    .commands = init_commands(),
+    .num_shards = NUM_THREADS,
+    .shards = shards,
+  };
+
+  init_shards(&gr_state);
+
   pthread_t threads[NUM_THREADS];
   for (size_t i = 0; i < NUM_THREADS; i++) {
-    pthread_create(&threads[i], NULL, (void *(*)(void *))run_loop, (void *)i);
+    Shard *s = &shards[i];
+    pthread_create(&threads[i], NULL, (void *(*)(void *))run_loop, (void *)s);
   }
 
   for (size_t i = 0; i < NUM_THREADS; i++) {
     pthread_join(threads[i], NULL);
   }
+
+  free_server_state(&gr_state);
 
   return 0;
 }

@@ -9,27 +9,11 @@
 #include "vector_types.h"
 #include "mpscq.h"
 
-typedef struct {
-  size_t shard_id;
-  vector_Conn_ptr *conns;
-  Deque idle_conn_queue;
-  Deque pending_writes_queue;
-  bool running;
-  size_t num_dbs;
-  struct hashmap **dbs;
-  struct hashmap *commands;
-} State;
-
-typedef struct {
-  bool running;
-  size_t num_dbs;
-  struct hashmap *commands;
-  size_t num_shards;
-  struct shard *shards;
-} GlobalState;
+typedef struct GRState GRState;
 
 typedef struct {
   size_t shard_id;
+  GRState *gr_state; // back reference to the global state
   vector_Conn_ptr *conns;
   Deque idle_conn_queue;
   Deque pending_writes_queue;
@@ -37,6 +21,14 @@ typedef struct {
   struct mpscq *cb_queue;
   struct hashmap **dbs;
 } Shard;
+
+struct GRState {
+  bool running;
+  size_t num_dbs;
+  struct hashmap *commands;
+  size_t num_shards;
+  Shard *shards;
+};
 
 typedef struct {
   void *arg;
