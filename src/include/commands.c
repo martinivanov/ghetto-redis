@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <ctype.h>
+#include <unistd.h>
 
 #include "commands.h"
 #include "hashmap.h"
@@ -127,7 +128,7 @@ void cmd_get_shard_req_cb(GetShardReq *req) {
   Entry *entry = (Entry *)hashmap_get_with_hash(db, &(Entry){.key = keyed_ctx->key, .keylen = keyed_ctx->keylen}, keyed_ctx->hash);
 
   GetShardResp *resp = (GetShardResp *)malloc(sizeof(GetShardResp));
-  fill_req_cb_ctx((CBContext *)resp, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, cmd_get_shard_resp_cb);
+  fill_req_cb_ctx((CBContext *)resp, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)cmd_get_shard_resp_cb);
   resp->entry = entry;
 
   mpscq_enqueue(cb_ctx->src->cb_queue, resp);
@@ -156,7 +157,7 @@ void cmd_get(Shard *shard, Conn *conn, const CmdArgs *args) {
     Shard *target_shard = &gr_state->shards[shard_id];
 
     GetShardReq *req = (GetShardReq *)malloc(sizeof(GetShardReq));
-    fill_req_cb_ctx((CBContext *)req, shard, target_shard, conn, cmd_get_shard_req_cb);
+    fill_req_cb_ctx((CBContext *)req, shard, target_shard, conn, (dispatch_cb)cmd_get_shard_req_cb);
     req->ctx.key = malloc(keylen);
     memcpy(req->ctx.key, key, keylen);
     req->ctx.keylen = keylen;
@@ -190,7 +191,7 @@ void cmd_set_shard_req_cb(SetShardReq *req) {
   }
 
   SimpleOKResp *resp = (SimpleOKResp *)malloc(sizeof(SimpleOKResp));
-  fill_req_cb_ctx((CBContext *)resp, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, cmd_set_shard_resp_cb);
+  fill_req_cb_ctx((CBContext *)resp, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)cmd_set_shard_resp_cb);
 
 
   mpscq_enqueue(cb_ctx->dst->cb_queue, resp);
@@ -199,7 +200,7 @@ void cmd_set_shard_req_cb(SetShardReq *req) {
 
 void cmd_set(Shard *shard, Conn *conn, const CmdArgs *args) {
     const size_t keylen = args->lens[1];
-    const uint8_t *key = (uint8_t *)malloc(keylen);
+    uint8_t *key = (uint8_t *)malloc(keylen);
     memcpy((void *)key, args->buf + args->offsets[1], keylen);
     const uint64_t hash = hashmap_xxhash3(key, keylen, 0, 0);
 
@@ -223,12 +224,12 @@ void cmd_set(Shard *shard, Conn *conn, const CmdArgs *args) {
       Shard *target_shard = &gr_state->shards[shard_id];
 
       SetShardReq *req = (SetShardReq *)malloc(sizeof(SetShardReq));
-      fill_req_cb_ctx((CBContext *)req, shard, target_shard, conn, cmd_set_shard_req_cb);
-      req->ctx.key = key;
-      req->ctx.keylen = keylen;
-      req->ctx.hash = hash;
-      req->val = val;
-      req->vallen = vallen;
+      fill_req_cb_ctx((CBContext *)req, shard, target_shard, conn, (dispatch_cb)cmd_set_shard_req_cb);
+      req->ctx.key = (uint8_t *)key;
+      req->ctx.keylen = (size_t)keylen;
+      req->ctx.hash = (size_t)hash;
+      req->val = (uint8_t *)val;
+      req->vallen = (size_t)vallen;
 
       if (mpscq_enqueue(target_shard->cb_queue, req)) {
         write(target_shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
@@ -249,7 +250,6 @@ void cmd_del_shard_resp_cb(IntegerResp *resp) {
 void cmd_del_shard_req_cb(DelShardReq *resp) {
   CBContext *cb_ctx = (CBContext *)resp;
   KeyedCBContext *keyed_ctx = (KeyedCBContext*)cb_ctx;
-  Conn *conn = cb_ctx->conn;
 
   struct hashmap *db = cb_ctx->dst->dbs[cb_ctx->conn->db];
   const void *entry = hashmap_delete_with_hash(db, &(Entry){.key = keyed_ctx->key, .keylen = keyed_ctx->keylen}, keyed_ctx->hash);
@@ -260,7 +260,7 @@ void cmd_del_shard_req_cb(DelShardReq *resp) {
   } 
 
   IntegerResp *int_resp = (IntegerResp *)malloc(sizeof(IntegerResp));
-  fill_req_cb_ctx((CBContext *)int_resp, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, cmd_del_shard_resp_cb);
+  fill_req_cb_ctx((CBContext *)int_resp, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)cmd_del_shard_resp_cb);
   int_resp->val = res;
 
   mpscq_enqueue(cb_ctx->dst->cb_queue, int_resp);
@@ -289,7 +289,7 @@ void cmd_del(Shard *shard, Conn *conn, const CmdArgs *args) {
     Shard *target_shard = &shard->gr_state->shards[shard_id];
 
     DelShardReq *req = (DelShardReq *)malloc(sizeof(DelShardReq));
-    fill_req_cb_ctx((CBContext *)req, shard, target_shard, conn, cmd_del_shard_req_cb);
+    fill_req_cb_ctx((CBContext *)req, shard, target_shard, conn, (dispatch_cb)cmd_del_shard_req_cb);
     req->ctx.key = malloc(keylen);
     memcpy(req->ctx.key, key, keylen);
     req->ctx.keylen = keylen;

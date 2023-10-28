@@ -462,14 +462,6 @@ void run_loop(void *arg) {
   struct epoll_event events[128];
   int timeout = -1;
   while (shard->gr_state->running) {
-    CBContext *ctx = mpscq_dequeue(shard->cb_queue);
-    while (ctx != NULL) {
-      void *arg = ctx;
-      ctx->cb(arg);
-      free(ctx);
-      ctx = mpscq_dequeue(shard->cb_queue);
-    }
-
     flush_pending_writes(shard);
 
     nfds = epoll_wait(fd_epoll, events, 128, timeout);
@@ -486,7 +478,13 @@ void run_loop(void *arg) {
         }
         epoll_register(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
       } else if (events[i].data.fd == shard->queue_efd) {
-        // skip
+        CBContext *ctx = mpscq_dequeue(shard->cb_queue);
+        while (ctx != NULL) {
+          void *arg = ctx;
+          ctx->cb(arg);
+          free(ctx);
+          ctx = mpscq_dequeue(shard->cb_queue);
+        }
       } else {
         struct epoll_event ev = events[i];
         int fd = ev.data.fd;
