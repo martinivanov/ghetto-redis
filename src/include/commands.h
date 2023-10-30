@@ -8,7 +8,7 @@
 #define VAR_ARGC (size_t)-1
 
 typedef void (*command_func)(Shard *shard, Conn* conn, const CmdArgs* args);
-typedef void (*dispatch_cb)(void *ctx);
+typedef void (*dispatch_cb)(Shard *shard, void *ctx);
 
 typedef struct {
     size_t name_len;

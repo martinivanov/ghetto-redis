@@ -15,6 +15,7 @@ enum State {
     REQUEST = 1 << 0,
     RESPONSE = 1 << 1,
     BLOCKED = 1 << 2,
+    DISPATCH_WAITING = 1 << 3,
     END = 1 << 31,
 };
 

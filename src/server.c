@@ -99,9 +99,9 @@ static void fd_set_nb(int fd) {
   }
 }
 
-void conn_put(vector_Conn_ptr *conns, Conn *conn) {
+void conn_put(vector_Conn_ptr *conns, Conn *conn, size_t shard_id) {
   size_t capacity = capacity_vector_Conn_ptr(conns);
-  printf("conn_put(%d)\n", conn->fd);
+  printf("shard_id=%zu conn_put(%d)\n", shard_id, conn->fd);
   if (capacity <= (size_t)conn->fd) {
     resize_vector_Conn_ptr(conns, conn->fd + 1);
   }
@@ -152,20 +152,20 @@ int32_t accept_new_conn(Shard *shard, int fd_listener) {
 
   client->idle_start = get_monotonic_usec();
 
-  conn_put(shard->conns, client);
+  conn_put(shard->conns, client, shard->shard_id);
   deque_push_back_and_attach(shard->idle_conn_queue, client, Conn, idle_conn_queue_node);
 
   return client_fd;
 }
 
 bool try_flush_buffer(Conn *conn) {
-  ssize_t rv = 0;
+  size_t rv = 0;
   do {
     size_t remaining = conn->send_buf_size - conn->send_buf_sent;
     // print buffer contents
 #ifdef DEBUG
-    printf("conn->send_buf_size=%zu conn->send_buf_sent=%zu remaining=%zu\n", conn->send_buf_size, conn->send_buf_sent, remaining);
-    printf("conn->send_buf:\n%.*s\n", (int)MESSAGE_MAX_LENGTH, conn->send_buf);
+    printf("[DEBUG](write)conn->send_buf_size=%zu conn->send_buf_sent=%zu remaining=%zu\n", conn->send_buf_size, conn->send_buf_sent, remaining);
+    printf("[DEBUG](write)conn->send_buf:\n%.*s\n", (int)MESSAGE_MAX_LENGTH, conn->send_buf);
 #endif
     rv = write(conn->fd, &conn->send_buf[conn->send_buf_sent], remaining);
   } while (rv < 0 && errno == EINTR);
@@ -182,7 +182,12 @@ bool try_flush_buffer(Conn *conn) {
   }
 
   conn->send_buf_sent += (size_t)rv;
-  assert(conn->send_buf_sent <= conn->send_buf_size);
+
+  if (conn->send_buf_sent > conn->send_buf_size) {
+    printf("DEBUG: conn->send_buf_sent=%zu conn->send_buf_size=%zu\n", conn->send_buf_sent, conn->send_buf_size);
+    assert(conn->send_buf_sent <= conn->send_buf_size);
+    panic("send_buf_sent > send_buf_size");
+  }
 
   if (conn->send_buf_sent == conn->send_buf_size) {
 #ifdef DEBUG
@@ -234,6 +239,11 @@ bool try_handle_request(Shard *shard, Conn *conn) {
     return false;
   }
 
+  if (conn->state & DISPATCH_WAITING) {
+    //printf("try_handle_request() called while in DISPATCH_WAITING state\n");
+    return false;
+  }  
+
   uint8_t *buf = conn->recv_buf + conn->recv_buf_read;
   CmdArgs args;
   ParseError err;
@@ -242,6 +252,7 @@ bool try_handle_request(Shard *shard, Conn *conn) {
   } else {
     err = parse_inline_request(conn, &args);
   }
+  assert(conn->send_buf_sent <= conn->send_buf_size);
 
   switch (err) {
     case PARSE_OK:
@@ -338,8 +349,7 @@ bool try_fill_buffer(Shard *shard, Conn *conn) {
   while (try_handle_request(shard, conn)) {
   }
 
-  bool test = (conn->state == END);
-  return test;
+  return conn->state & (END | DISPATCH_WAITING);
 }
 
 void state_request(Shard *shard, Conn *conn) {
@@ -399,7 +409,7 @@ void flush_pending_writes(Shard *shard) {
     }
 }
 
-#define MAX_IDLE_MS 5000
+#define MAX_IDLE_MS 60000
 
 uint64_t close_idle_connections(Shard *shard) {
   uint64_t now_us = get_monotonic_usec();
@@ -423,8 +433,6 @@ uint64_t close_idle_connections(Shard *shard) {
 
 void run_loop(void *arg) {
   Shard *shard = (Shard*)arg;
-
-  printf("shard_id=%zu\n", shard->shard_id);
 
   int fd_listener = socket(AF_INET, SOCK_STREAM, 0);
   int val = 1;
@@ -464,6 +472,21 @@ void run_loop(void *arg) {
   while (shard->gr_state->running) {
     flush_pending_writes(shard);
 
+    CBContext *ctx = mpscq_dequeue(shard->cb_queue);
+    while (ctx != NULL) {
+      void *arg = ctx;
+      ctx->cb(shard, arg);
+      Conn *c = ctx->conn;
+
+      if ((c->state & DISPATCH_WAITING) == 0) {
+        // printf("[CALLBACK] fd=%d shard_id=%zu\n", c->fd, shard->shard_id);
+        state_request(shard, c);
+      }      
+
+      free(ctx);
+      ctx = mpscq_dequeue(shard->cb_queue);
+    }
+
     nfds = epoll_wait(fd_epoll, events, 128, timeout);
     if (nfds == -1) {
       perror("epoll_wait()");
@@ -478,13 +501,7 @@ void run_loop(void *arg) {
         }
         epoll_register(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
       } else if (events[i].data.fd == shard->queue_efd) {
-        CBContext *ctx = mpscq_dequeue(shard->cb_queue);
-        while (ctx != NULL) {
-          void *arg = ctx;
-          ctx->cb(arg);
-          free(ctx);
-          ctx = mpscq_dequeue(shard->cb_queue);
-        }
+        // pass
       } else {
         struct epoll_event ev = events[i];
         int fd = ev.data.fd;
@@ -493,8 +510,14 @@ void run_loop(void *arg) {
         conn->idle_start = get_monotonic_usec();
         deque_move_to_back(&shard->idle_conn_queue, conn->idle_conn_queue_node);
         if (ev.events & EPOLLIN) {
-          state_request(shard, conn);
+      if ((conn->state & DISPATCH_WAITING) == 0) {
+            // printf("[ EPOLLIN] fd=%d shard_id=%zu\n", conn->fd, shard->shard_id);
+            state_request(shard, conn);
+          } else {
+            printf("EPOLLIN while in DISPATCH_WAITING state\n");
+          }
         } else if (ev.events & EPOLLOUT) {
+          printf("EPOLLOUT\n");
           state_response(conn);
           epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
         }
@@ -515,6 +538,16 @@ void run_loop(void *arg) {
       }
     }
 
+    // TODO: this should stay here until we have proper write signalling
+    for (size_t i = 0; i < capacity_vector_Conn_ptr(shard->conns); i++) {
+      Conn *conn = shard->conns->array[i];
+      if (conn && conn->state != END) {
+        if (conn->send_buf_size != conn->send_buf_sent) {
+          deque_push_back_and_attach(shard->pending_writes_queue, conn, Conn, pending_writes_queue_node);
+        }
+      }
+    }
+
     timeout = close_idle_connections(shard);
   }
 
@@ -528,7 +561,7 @@ void run_loop(void *arg) {
   }
 }
 
-const size_t NUM_THREADS = 4;
+const size_t NUM_THREADS = 2;
 
 int main() {
   Shard shards[NUM_THREADS];

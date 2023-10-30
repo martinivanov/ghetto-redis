@@ -106,7 +106,7 @@ void cmd_quit(Shard *shard, Conn *conn, const CmdArgs *args) {
     write_simple_string(conn, "OK", 2);
 }
 
-void cmd_get_shard_resp_cb(GetShardResp *resp) {
+void cmd_get_shard_resp_cb(Shard *shard, GetShardResp *resp) {
   CBContext *cb_ctx = (CBContext *)resp;
   Conn *conn = cb_ctx->conn;
 
@@ -117,10 +117,11 @@ void cmd_get_shard_resp_cb(GetShardResp *resp) {
     write_null_bulk_string(conn);
   }
 
-  deque_push_back_and_attach(cb_ctx->src->pending_writes_queue, conn, Conn, pending_writes_queue_node);
+  conn->state &= ~DISPATCH_WAITING;
+  //deque_push_back_and_attach(shard->pending_writes_queue, conn, Conn, pending_writes_queue_node);
 }
 
-void cmd_get_shard_req_cb(GetShardReq *req) {
+void cmd_get_shard_req_cb(Shard *shard, GetShardReq *req) {
   CBContext *cb_ctx = (CBContext *)req;
   KeyedCBContext *keyed_ctx = (KeyedCBContext*)req;
   struct hashmap *db = cb_ctx->dst->dbs[cb_ctx->conn->db];
@@ -163,6 +164,7 @@ void cmd_get(Shard *shard, Conn *conn, const CmdArgs *args) {
     req->ctx.keylen = keylen;
     req->ctx.hash = hash;
 
+    conn->state |= DISPATCH_WAITING;
     if (mpscq_enqueue(target_shard->cb_queue, req)) {
       write(target_shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
     } else {
@@ -171,15 +173,17 @@ void cmd_get(Shard *shard, Conn *conn, const CmdArgs *args) {
   }
 }
 
-void cmd_set_shard_resp_cb(SimpleOKResp *resp) {
+void cmd_set_shard_resp_cb(Shard *shard, SimpleOKResp *resp) {
   CBContext *cb_ctx = (CBContext *)resp;
   Conn *conn = cb_ctx->conn;
 
   write_simple_string(conn, "OK", 2);
-  deque_push_back_and_attach(cb_ctx->dst->pending_writes_queue, conn, Conn, pending_writes_queue_node);
+
+  conn->state &= ~DISPATCH_WAITING;
+  //deque_push_back_and_attach(shard->pending_writes_queue, conn, Conn, pending_writes_queue_node);
 }
 
-void cmd_set_shard_req_cb(SetShardReq *req) {
+void cmd_set_shard_req_cb(Shard *shard, SetShardReq *req) {
   CBContext *cb_ctx = (CBContext *)req;
   KeyedCBContext *keyed_ctx = (KeyedCBContext*)req;
   struct hashmap *db = cb_ctx->dst->dbs[cb_ctx->conn->db];
@@ -193,9 +197,9 @@ void cmd_set_shard_req_cb(SetShardReq *req) {
   SimpleOKResp *resp = (SimpleOKResp *)malloc(sizeof(SimpleOKResp));
   fill_req_cb_ctx((CBContext *)resp, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)cmd_set_shard_resp_cb);
 
-
-  mpscq_enqueue(cb_ctx->dst->cb_queue, resp);
-  write(cb_ctx->dst->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
+  if (mpscq_enqueue(cb_ctx->dst->cb_queue, resp)) {
+    write(cb_ctx->dst->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
+  }
 }
 
 void cmd_set(Shard *shard, Conn *conn, const CmdArgs *args) {
@@ -231,6 +235,7 @@ void cmd_set(Shard *shard, Conn *conn, const CmdArgs *args) {
       req->val = (uint8_t *)val;
       req->vallen = (size_t)vallen;
 
+      conn->state |= DISPATCH_WAITING;
       if (mpscq_enqueue(target_shard->cb_queue, req)) {
         write(target_shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
       } else {
@@ -239,15 +244,17 @@ void cmd_set(Shard *shard, Conn *conn, const CmdArgs *args) {
     }
 }
 
-void cmd_del_shard_resp_cb(IntegerResp *resp) {
+void cmd_del_shard_resp_cb(Shard *shard, IntegerResp *resp) {
   CBContext *cb_ctx = (CBContext *)resp;
   Conn *conn = cb_ctx->conn;
 
   write_integer(conn, resp->val);
-  deque_push_back_and_attach(cb_ctx->dst->pending_writes_queue, conn, Conn, pending_writes_queue_node);
+
+  conn->state &= ~DISPATCH_WAITING;
+  //deque_push_back_and_attach(shard->pending_writes_queue, conn, Conn, pending_writes_queue_node);
 }
 
-void cmd_del_shard_req_cb(DelShardReq *resp) {
+void cmd_del_shard_req_cb(Shard *shard, DelShardReq *resp) {
   CBContext *cb_ctx = (CBContext *)resp;
   KeyedCBContext *keyed_ctx = (KeyedCBContext*)cb_ctx;
 
@@ -295,6 +302,7 @@ void cmd_del(Shard *shard, Conn *conn, const CmdArgs *args) {
     req->ctx.keylen = keylen;
     req->ctx.hash = hash;
 
+    conn->state |= DISPATCH_WAITING;
     if (mpscq_enqueue(target_shard->cb_queue, req)) {
       write(target_shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
     } else {
