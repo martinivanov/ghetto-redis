@@ -118,7 +118,7 @@ void cmd_get_shard_resp_cb(Shard *shard, GetShardResp *resp) {
   }
 
   conn->state &= ~DISPATCH_WAITING;
-  //deque_push_back_and_attach(shard->pending_writes_queue, conn, Conn, pending_writes_queue_node);
+  write(shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
 }
 
 void cmd_get_shard_req_cb(Shard *shard, GetShardReq *req) {
@@ -180,7 +180,7 @@ void cmd_set_shard_resp_cb(Shard *shard, SimpleOKResp *resp) {
   write_simple_string(conn, "OK", 2);
 
   conn->state &= ~DISPATCH_WAITING;
-  //deque_push_back_and_attach(shard->pending_writes_queue, conn, Conn, pending_writes_queue_node);
+  write(shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
 }
 
 void cmd_set_shard_req_cb(Shard *shard, SetShardReq *req) {

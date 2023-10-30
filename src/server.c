@@ -449,9 +449,10 @@ void execute_callbacks(Shard *shard) {
         state_request_cb(shard, c);
       }      
 
-      // if (c->send_buf_size != c->send_buf_sent) {
-      //   deque_push_back_and_attach(shard->pending_writes_queue, c, Conn, pending_writes_queue_node);
-      // }
+      if (c->send_buf_size > c->send_buf_sent) {
+        deque_push_back_and_attach(shard->pending_writes_queue, c, Conn, pending_writes_queue_node);
+        //write(shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
+      }
     }
 
     free(ctx);
@@ -500,8 +501,6 @@ void run_loop(void *arg) {
   while (shard->gr_state->running) {
     flush_pending_writes(shard);
 
-    execute_callbacks(shard);
-
     nfds = epoll_wait(fd_epoll, events, 128, timeout);
     if (nfds == -1) {
       perror("epoll_wait()");
@@ -516,7 +515,6 @@ void run_loop(void *arg) {
         }
         epoll_register(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
       } else if (events[i].data.fd == shard->queue_efd) {
-        // printf("[   LOOP] shard_id=%zu queue_efd=%d\n", shard->shard_id, shard->queue_efd);
         uint64_t val = 0; 
         read(shard->queue_efd, &val, sizeof(val));
       } else {
@@ -565,6 +563,8 @@ void run_loop(void *arg) {
       }
     }
 
+    execute_callbacks(shard);
+
     timeout = close_idle_connections(shard);
   }
 
@@ -578,7 +578,7 @@ void run_loop(void *arg) {
   }
 }
 
-const size_t NUM_THREADS = 4;
+const size_t NUM_THREADS = 2;
 
 int main() {
   Shard shards[NUM_THREADS];
