@@ -143,6 +143,7 @@ int32_t accept_new_conn(Shard *shard, int fd_listener) {
   }
 
   client->fd = client_fd;
+  client->shard_id = shard->shard_id;
   client->db = 0;
   client->addr = client_addr;
   client->recv_buf_size = 0;
@@ -352,7 +353,12 @@ bool try_fill_buffer(Shard *shard, Conn *conn) {
   return conn->state & (END | DISPATCH_WAITING);
 }
 
-void state_request(Shard *shard, Conn *conn) {
+void state_request_cb(Shard *shard, Conn *conn) {
+  while (try_fill_buffer(shard, conn)) {
+  }
+}
+
+void state_request_epoll(Shard *shard, Conn *conn) {
   while (try_fill_buffer(shard, conn)) {
   }
 }
@@ -409,7 +415,7 @@ void flush_pending_writes(Shard *shard) {
     }
 }
 
-#define MAX_IDLE_MS 60000
+#define MAX_IDLE_MS 30000
 
 uint64_t close_idle_connections(Shard *shard) {
   uint64_t now_us = get_monotonic_usec();
@@ -480,10 +486,12 @@ void run_loop(void *arg) {
       ctx->cb(shard, arg);
       Conn *c = ctx->conn;
 
-      if ((c->state & DISPATCH_WAITING) == 0) {
-        // printf("[CALLBACK] fd=%d shard_id=%zu\n", c->fd, shard->shard_id);
-        state_request(shard, c);
-      }      
+      if (c->shard_id == shard->shard_id) { // our connection, we can handle IO
+        if ((c->state & DISPATCH_WAITING) == 0) {
+          // printf("[CALLBACK] fd=%d shard_id=%zu\n", c->fd, shard->shard_id);
+          state_request_cb(shard, c);
+        }      
+      }
 
       free(ctx);
       ctx = mpscq_dequeue(shard->cb_queue);
@@ -516,7 +524,7 @@ void run_loop(void *arg) {
         if (ev.events & EPOLLIN) {
           if ((conn->state & DISPATCH_WAITING) == 0) {
             // printf("[ EPOLLIN] fd=%d shard_id=%zu\n", conn->fd, shard->shard_id);
-            state_request(shard, conn);
+            state_request_epoll(shard, conn);
           } else {
             // printf("[ EPOLLIN] while in DISPATCH_WAITING state\n");
           }
@@ -565,7 +573,7 @@ void run_loop(void *arg) {
   }
 }
 
-const size_t NUM_THREADS = 1;
+const size_t NUM_THREADS = 4;
 
 int main() {
   Shard shards[NUM_THREADS];

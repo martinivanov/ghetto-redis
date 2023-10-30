@@ -39,6 +39,7 @@ static const uint8_t CRLF[] = {'\r', '\n'};
 typedef struct {
     int fd;
     enum State state;
+    size_t shard_id;
 
     struct sockaddr_in addr;
 

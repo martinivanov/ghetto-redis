@@ -164,8 +164,8 @@ void cmd_get(Shard *shard, Conn *conn, const CmdArgs *args) {
     req->ctx.keylen = keylen;
     req->ctx.hash = hash;
 
-    conn->state |= DISPATCH_WAITING;
     if (mpscq_enqueue(target_shard->cb_queue, req)) {
+      conn->state |= DISPATCH_WAITING;
       write(target_shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
     } else {
       write_simple_generic_error(conn, "shard dispatch queue full");
@@ -235,8 +235,8 @@ void cmd_set(Shard *shard, Conn *conn, const CmdArgs *args) {
       req->val = (uint8_t *)val;
       req->vallen = (size_t)vallen;
 
-      conn->state |= DISPATCH_WAITING;
       if (mpscq_enqueue(target_shard->cb_queue, req)) {
+        conn->state |= DISPATCH_WAITING;
         write(target_shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
       } else {
         write_simple_generic_error(conn, "shard dispatch queue full");
@@ -302,8 +302,8 @@ void cmd_del(Shard *shard, Conn *conn, const CmdArgs *args) {
     req->ctx.keylen = keylen;
     req->ctx.hash = hash;
 
-    conn->state |= DISPATCH_WAITING;
     if (mpscq_enqueue(target_shard->cb_queue, req)) {
+      conn->state |= DISPATCH_WAITING;
       write(target_shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
     } else {
       write_simple_generic_error(conn, "shard dispatch queue full");
