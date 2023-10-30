@@ -415,7 +415,7 @@ void flush_pending_writes(Shard *shard) {
     }
 }
 
-#define MAX_IDLE_MS 30000
+#define MAX_IDLE_MS 5000
 
 uint64_t close_idle_connections(Shard *shard) {
   uint64_t now_us = get_monotonic_usec();
@@ -435,6 +435,28 @@ uint64_t close_idle_connections(Shard *shard) {
   }
 
   return MAX_IDLE_MS; 
+}
+
+void execute_callbacks(Shard *shard) {
+  CBContext *ctx = mpscq_dequeue(shard->cb_queue);
+  while (ctx != NULL) {
+    void *arg = ctx;
+    ctx->cb(shard, arg);
+    Conn *c = ctx->conn;
+
+    if (c->shard_id == shard->shard_id) { // our connection, we can handle IO
+      if ((c->state & DISPATCH_WAITING) == 0) {
+        state_request_cb(shard, c);
+      }      
+
+      // if (c->send_buf_size != c->send_buf_sent) {
+      //   deque_push_back_and_attach(shard->pending_writes_queue, c, Conn, pending_writes_queue_node);
+      // }
+    }
+
+    free(ctx);
+    ctx = mpscq_dequeue(shard->cb_queue);
+  }
 }
 
 void run_loop(void *arg) {
@@ -476,26 +498,9 @@ void run_loop(void *arg) {
   struct epoll_event events[128];
   int timeout = -1;
   while (shard->gr_state->running) {
-    //printf("[   LOOP] shard_id=%zu\n", shard->shard_id);
-
     flush_pending_writes(shard);
 
-    CBContext *ctx = mpscq_dequeue(shard->cb_queue);
-    while (ctx != NULL) {
-      void *arg = ctx;
-      ctx->cb(shard, arg);
-      Conn *c = ctx->conn;
-
-      if (c->shard_id == shard->shard_id) { // our connection, we can handle IO
-        if ((c->state & DISPATCH_WAITING) == 0) {
-          // printf("[CALLBACK] fd=%d shard_id=%zu\n", c->fd, shard->shard_id);
-          state_request_cb(shard, c);
-        }      
-      }
-
-      free(ctx);
-      ctx = mpscq_dequeue(shard->cb_queue);
-    }
+    execute_callbacks(shard);
 
     nfds = epoll_wait(fd_epoll, events, 128, timeout);
     if (nfds == -1) {
