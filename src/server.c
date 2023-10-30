@@ -470,6 +470,8 @@ void run_loop(void *arg) {
   struct epoll_event events[128];
   int timeout = -1;
   while (shard->gr_state->running) {
+    //printf("[   LOOP] shard_id=%zu\n", shard->shard_id);
+
     flush_pending_writes(shard);
 
     CBContext *ctx = mpscq_dequeue(shard->cb_queue);
@@ -501,7 +503,9 @@ void run_loop(void *arg) {
         }
         epoll_register(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
       } else if (events[i].data.fd == shard->queue_efd) {
-        // pass
+        // printf("[   LOOP] shard_id=%zu queue_efd=%d\n", shard->shard_id, shard->queue_efd);
+        uint64_t val = 0; 
+        read(shard->queue_efd, &val, sizeof(val));
       } else {
         struct epoll_event ev = events[i];
         int fd = ev.data.fd;
@@ -510,11 +514,11 @@ void run_loop(void *arg) {
         conn->idle_start = get_monotonic_usec();
         deque_move_to_back(&shard->idle_conn_queue, conn->idle_conn_queue_node);
         if (ev.events & EPOLLIN) {
-      if ((conn->state & DISPATCH_WAITING) == 0) {
+          if ((conn->state & DISPATCH_WAITING) == 0) {
             // printf("[ EPOLLIN] fd=%d shard_id=%zu\n", conn->fd, shard->shard_id);
             state_request(shard, conn);
           } else {
-            printf("EPOLLIN while in DISPATCH_WAITING state\n");
+            // printf("[ EPOLLIN] while in DISPATCH_WAITING state\n");
           }
         } else if (ev.events & EPOLLOUT) {
           printf("EPOLLOUT\n");
@@ -561,7 +565,7 @@ void run_loop(void *arg) {
   }
 }
 
-const size_t NUM_THREADS = 2;
+const size_t NUM_THREADS = 1;
 
 int main() {
   Shard shards[NUM_THREADS];
