@@ -107,6 +107,7 @@ void cmd_quit(Shard *shard, Conn *conn, const CmdArgs *args) {
 }
 
 void cmd_get_shard_resp_cb(Shard *shard, GetShardResp *resp) {
+  LOG_DEBUG_WITH_CTX(shard->shard_id, "get shard resp cb");
   CBContext *cb_ctx = (CBContext *)resp;
   Conn *conn = cb_ctx->conn;
 
@@ -122,6 +123,7 @@ void cmd_get_shard_resp_cb(Shard *shard, GetShardResp *resp) {
 }
 
 void cmd_get_shard_req_cb(Shard *shard, GetShardReq *req) {
+  LOG_DEBUG_WITH_CTX(shard->shard_id, "get shard req cb");
   CBContext *cb_ctx = (CBContext *)req;
   KeyedCBContext *keyed_ctx = (KeyedCBContext*)req;
   struct hashmap *db = cb_ctx->dst->dbs[cb_ctx->conn->db];
@@ -138,12 +140,15 @@ void cmd_get_shard_req_cb(Shard *shard, GetShardReq *req) {
 }
 
 void cmd_get(Shard *shard, Conn *conn, const CmdArgs *args) {
+  LOG_DEBUG_WITH_CTX(shard->shard_id, "get");
   const GRState *gr_state = shard->gr_state;
   const uint8_t *key = args->buf + args->offsets[1];
   const size_t keylen = args->lens[1];
   const uint64_t hash = hashmap_xxhash3(key, keylen, 0, 0);
 
   size_t shard_id = hash % gr_state->num_shards;
+
+  LOG_DEBUG_WITH_CTX(shard->shard_id, "key %.*s hashed to shard_id: %zu", keylen, key, shard_id);
 
   //if (shard_id == shard->shard_id) {
   if (false) {
@@ -174,6 +179,7 @@ void cmd_get(Shard *shard, Conn *conn, const CmdArgs *args) {
 }
 
 void cmd_set_shard_resp_cb(Shard *shard, SimpleOKResp *resp) {
+  LOG_DEBUG_WITH_CTX(shard->shard_id, "set shard resp cb");
   CBContext *cb_ctx = (CBContext *)resp;
   Conn *conn = cb_ctx->conn;
 
@@ -184,6 +190,7 @@ void cmd_set_shard_resp_cb(Shard *shard, SimpleOKResp *resp) {
 }
 
 void cmd_set_shard_req_cb(Shard *shard, SetShardReq *req) {
+  LOG_DEBUG_WITH_CTX(shard->shard_id, "set shard req cb");
   CBContext *cb_ctx = (CBContext *)req;
   KeyedCBContext *keyed_ctx = (KeyedCBContext*)req;
   struct hashmap *db = cb_ctx->dst->dbs[cb_ctx->conn->db];
@@ -197,12 +204,13 @@ void cmd_set_shard_req_cb(Shard *shard, SetShardReq *req) {
   SimpleOKResp *resp = (SimpleOKResp *)malloc(sizeof(SimpleOKResp));
   fill_req_cb_ctx((CBContext *)resp, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)cmd_set_shard_resp_cb);
 
-  if (mpscq_enqueue(cb_ctx->dst->cb_queue, resp)) {
-    write(cb_ctx->dst->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
+  if (mpscq_enqueue(cb_ctx->src->cb_queue, resp)) {
+    write(cb_ctx->src->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
   }
 }
 
 void cmd_set(Shard *shard, Conn *conn, const CmdArgs *args) {
+  LOG_DEBUG_WITH_CTX(shard->shard_id, "set");
     const size_t keylen = args->lens[1];
     uint8_t *key = (uint8_t *)malloc(keylen);
     memcpy((void *)key, args->buf + args->offsets[1], keylen);
@@ -213,6 +221,9 @@ void cmd_set(Shard *shard, Conn *conn, const CmdArgs *args) {
     memcpy((void *)val, args->buf + args->offsets[2], vallen);
 
     size_t shard_id = hash % shard->gr_state->num_shards;
+
+    LOG_DEBUG_WITH_CTX(shard->shard_id, "key %.*s hashed to shard_id: %zu", keylen, key, shard_id);
+
     //if (shard_id == shard->shard_id) {
     if (false) {
       struct hashmap *db = shard->dbs[conn->db];
@@ -270,8 +281,8 @@ void cmd_del_shard_req_cb(Shard *shard, DelShardReq *resp) {
   fill_req_cb_ctx((CBContext *)int_resp, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)cmd_del_shard_resp_cb);
   int_resp->val = res;
 
-  mpscq_enqueue(cb_ctx->dst->cb_queue, int_resp);
-  write(cb_ctx->dst->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
+  mpscq_enqueue(cb_ctx->src->cb_queue, int_resp);
+  write(cb_ctx->src->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
   free(keyed_ctx->key);
 }
 

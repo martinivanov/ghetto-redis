@@ -18,13 +18,16 @@ static inline char *timenow();
 #define DEBUG_LEVEL     0x04
 
 #ifndef LOG_LEVEL
-#define LOG_LEVEL   DEBUG_LEVEL
+#define LOG_LEVEL   NO_LOG
 #endif
 
 #define PRINTFUNCTION(format, ...)      fprintf(stderr, format, __VA_ARGS__)
 
 #define LOG_FMT             "%s | %-7s | %-15s | %s:%d | "
 #define LOG_ARGS(LOG_TAG)   timenow(), LOG_TAG, _FILE, __FUNCTION__, __LINE__
+
+#define LOG_CTX_FMT             "%s | %-7s | %-15s | %d | %s:%d | "
+#define LOG_CTX_ARGS(LOG_TAG, shard_id)   timenow(), LOG_TAG, _FILE, shard_id, __FUNCTION__, __LINE__
 
 #define NEWLINE     "\n"
 
@@ -37,6 +40,12 @@ static inline char *timenow();
 #define LOG_DEBUG(message, args...)     PRINTFUNCTION(LOG_FMT message NEWLINE, LOG_ARGS(DEBUG_TAG), ## args)
 #else
 #define LOG_DEBUG(message, args...)
+#endif
+
+#if LOG_LEVEL >= DEBUG_LEVEL
+#define LOG_DEBUG_WITH_CTX(shard_id, message, args...)     PRINTFUNCTION(LOG_CTX_FMT message NEWLINE, LOG_CTX_ARGS(DEBUG_TAG, shard_id), ## args)
+#else
+#define LOG_DEBUG_WITH_CTX(shard_id, message, args...)
 #endif
 
 #if LOG_LEVEL >= INFO_LEVEL

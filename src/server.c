@@ -164,8 +164,8 @@ bool try_flush_buffer(Conn *conn) {
   do {
     size_t remaining = conn->send_buf_size - conn->send_buf_sent;
 
-    LOG_DEBUG("[DEBUG](write)conn->send_buf_size=%zu conn->send_buf_sent=%zu remaining=%zu", conn->send_buf_size, conn->send_buf_sent, remaining);
-    LOG_DEBUG("[DEBUG](write)conn->send_buf:%.*s", (int)MESSAGE_MAX_LENGTH, conn->send_buf);
+    LOG_DEBUG_WITH_CTX(conn->shard_id, "conn->send_buf_size=%zu conn->send_buf_sent=%zu remaining=%zu", conn->send_buf_size, conn->send_buf_sent, remaining);
+    LOG_DEBUG_WITH_CTX(conn->shard_id, "conn->send_buf:%.*s", (int)MESSAGE_MAX_LENGTH, conn->send_buf);
 
     rv = write(conn->fd, &conn->send_buf[conn->send_buf_sent], remaining);
   } while (rv < 0 && errno == EINTR);
@@ -238,7 +238,6 @@ bool try_handle_request(Shard *shard, Conn *conn) {
   }
 
   if (conn->state & DISPATCH_WAITING) {
-    //LOG_DEBUG("try_handle_request() called while in DISPATCH_WAITING state\n");
     return false;
   }  
 
@@ -269,7 +268,7 @@ bool try_handle_request(Shard *shard, Conn *conn) {
 
 #ifdef LOG_LEVEL == DEBUG_LEVEL
   for (size_t i = 0; i < args.argc; i++) {
-    LOG_DEBUG("Arg %zu: %.*s", i, args.lens[i], &args.buf[args.offsets[i]]);
+    LOG_DEBUG_WITH_CTX(shard->shard_id, "Arg %zu: %.*s", i, args.lens[i], &args.buf[args.offsets[i]]);
   }
 #endif
 
@@ -287,7 +286,7 @@ bool try_handle_request(Shard *shard, Conn *conn) {
 
   conn->recv_buf_read += args.len;
   size_t remaining = conn->recv_buf_size - args.len;
-  LOG_DEBUG("[after command] conn->recv_buf_read=%zu conn->recv_buf_size=%zu remaining=%zu", conn->recv_buf_read, conn->recv_buf_size, remaining);
+  LOG_DEBUG_WITH_CTX(shard->shard_id, "[after command] conn->recv_buf_read=%zu conn->recv_buf_size=%zu remaining=%zu", conn->recv_buf_read, conn->recv_buf_size, remaining);
 
   conn->recv_buf_size = remaining;
 
@@ -301,12 +300,12 @@ bool try_fill_buffer(Shard *shard, Conn *conn) {
   do {
     size_t cap = sizeof(conn->recv_buf) - conn->recv_buf_size;
     if (conn->recv_buf_read > 0) {
-      LOG_DEBUG("compacting buffer by moving %zu byte from offset %zu to 0", conn->recv_buf_size, conn->recv_buf_read);
+      LOG_DEBUG_WITH_CTX(shard->shard_id, "compacting buffer by moving %zu byte from offset %zu to 0", conn->recv_buf_size, conn->recv_buf_read);
       memmove(conn->recv_buf, &conn->recv_buf[conn->recv_buf_read], conn->recv_buf_size);
       conn->recv_buf_read = 0;
     }
     rv = read(conn->fd, &conn->recv_buf[conn->recv_buf_size], cap);
-    LOG_DEBUG("read %zu bytes(up to %zu) errno=%d", rv, cap, errno);
+    LOG_DEBUG_WITH_CTX(shard->shard_id, "read %zu bytes(up to %zu) errno=%d", rv, cap, errno);
   } while (rv < 0 && errno == EINTR);
 
   if (rv < 0 && errno == EAGAIN) {
@@ -399,7 +398,7 @@ void flush_pending_writes(Shard *shard) {
     }
 }
 
-#define MAX_IDLE_MS 5000
+#define MAX_IDLE_MS 60000
 
 uint64_t close_idle_connections(Shard *shard) {
   uint64_t now_us = get_monotonic_usec();
