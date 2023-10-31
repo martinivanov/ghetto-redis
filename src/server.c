@@ -101,7 +101,7 @@ static void fd_set_nb(int fd) {
 
 void conn_put(vector_Conn_ptr *conns, Conn *conn, size_t shard_id) {
   size_t capacity = capacity_vector_Conn_ptr(conns);
-  printf("shard_id=%zu conn_put(%d)\n", shard_id, conn->fd);
+  LOG_DEBUG("shard_id=%zu conn_put(%d)", shard_id, conn->fd);
   if (capacity <= (size_t)conn->fd) {
     resize_vector_Conn_ptr(conns, conn->fd + 1);
   }
@@ -128,11 +128,11 @@ int32_t accept_new_conn(Shard *shard, int fd_listener) {
   socklen_t socklen = sizeof(client_addr);
   int client_fd = accept(fd_listener, (struct sockaddr *)&client_addr, &socklen);
   if (client_fd < 0) {
-    warn("accept() error");
+    LOG_WARN("accept() error");
     return -1;
   }
 
-  printf("accepted fd=%d\n", client_fd);
+  LOG_DEBUG("accepted fd=%d", client_fd);
 
   fd_set_nb(client_fd);
   Conn *client = (Conn *)malloc(sizeof(Conn));
@@ -163,11 +163,10 @@ bool try_flush_buffer(Conn *conn) {
   size_t rv = 0;
   do {
     size_t remaining = conn->send_buf_size - conn->send_buf_sent;
-    // print buffer contents
-#ifdef DEBUG
-    printf("[DEBUG](write)conn->send_buf_size=%zu conn->send_buf_sent=%zu remaining=%zu\n", conn->send_buf_size, conn->send_buf_sent, remaining);
-    printf("[DEBUG](write)conn->send_buf:\n%.*s\n", (int)MESSAGE_MAX_LENGTH, conn->send_buf);
-#endif
+
+    LOG_DEBUG("[DEBUG](write)conn->send_buf_size=%zu conn->send_buf_sent=%zu remaining=%zu", conn->send_buf_size, conn->send_buf_sent, remaining);
+    LOG_DEBUG("[DEBUG](write)conn->send_buf:%.*s", (int)MESSAGE_MAX_LENGTH, conn->send_buf);
+
     rv = write(conn->fd, &conn->send_buf[conn->send_buf_sent], remaining);
   } while (rv < 0 && errno == EINTR);
 
@@ -177,7 +176,7 @@ bool try_flush_buffer(Conn *conn) {
   }
 
   if (rv < 0) {
-    warn("write() error");
+    LOG_WARN("write() error");
     conn->state = END;
     return false;
   }
@@ -185,15 +184,13 @@ bool try_flush_buffer(Conn *conn) {
   conn->send_buf_sent += (size_t)rv;
 
   if (conn->send_buf_sent > conn->send_buf_size) {
-    printf("DEBUG: conn->send_buf_sent=%zu conn->send_buf_size=%zu\n", conn->send_buf_sent, conn->send_buf_size);
+    LOG_DEBUG("conn->send_buf_sent=%zu conn->send_buf_size=%zu", conn->send_buf_sent, conn->send_buf_size);
     assert(conn->send_buf_sent <= conn->send_buf_size);
     panic("send_buf_sent > send_buf_size");
   }
 
   if (conn->send_buf_sent == conn->send_buf_size) {
-#ifdef DEBUG
-    printf("Response sent fully --- conn->send_buf_sent=%zu conn->send_buf_size=%zu\n", conn->send_buf_sent, conn->send_buf_size);
-#endif
+    LOG_DEBUG("Response sent fully --- conn->send_buf_sent=%zu conn->send_buf_size=%zu", conn->send_buf_sent, conn->send_buf_size);
     conn->send_buf_sent = 0;
     conn->send_buf_size = 0;
     return false;
@@ -241,7 +238,7 @@ bool try_handle_request(Shard *shard, Conn *conn) {
   }
 
   if (conn->state & DISPATCH_WAITING) {
-    //printf("try_handle_request() called while in DISPATCH_WAITING state\n");
+    //LOG_DEBUG("try_handle_request() called while in DISPATCH_WAITING state\n");
     return false;
   }  
 
@@ -270,13 +267,9 @@ bool try_handle_request(Shard *shard, Conn *conn) {
       return false;
   }
 
-#ifdef DEBUG
+#ifdef LOG_LEVEL == DEBUG_LEVEL
   for (size_t i = 0; i < args.argc; i++) {
-    printf("Arg %zu: ", i);
-    for (size_t j = 0; j < args.lens[i]; j++) {
-      printf("%c", args.buf[args.offsets[i] + j]);
-    }
-    printf("\n");
+    LOG_DEBUG("Arg %zu: %.*s", i, args.lens[i], &args.buf[args.offsets[i]]);
   }
 #endif
 
@@ -294,9 +287,7 @@ bool try_handle_request(Shard *shard, Conn *conn) {
 
   conn->recv_buf_read += args.len;
   size_t remaining = conn->recv_buf_size - args.len;
-#ifdef DEBUG
-  printf("[after command] conn->recv_buf_read=%zu conn->recv_buf_size=%zu remaining=%zu\n", conn->recv_buf_read, conn->recv_buf_size, remaining);
-#endif
+  LOG_DEBUG("[after command] conn->recv_buf_read=%zu conn->recv_buf_size=%zu remaining=%zu", conn->recv_buf_read, conn->recv_buf_size, remaining);
 
   conn->recv_buf_size = remaining;
 
@@ -310,16 +301,12 @@ bool try_fill_buffer(Shard *shard, Conn *conn) {
   do {
     size_t cap = sizeof(conn->recv_buf) - conn->recv_buf_size;
     if (conn->recv_buf_read > 0) {
-#ifdef DEBUG
-      printf("compacting buffer by moving %zu byte from offset %zu to 0\n", conn->recv_buf_size, conn->recv_buf_read);
-#endif
+      LOG_DEBUG("compacting buffer by moving %zu byte from offset %zu to 0", conn->recv_buf_size, conn->recv_buf_read);
       memmove(conn->recv_buf, &conn->recv_buf[conn->recv_buf_read], conn->recv_buf_size);
       conn->recv_buf_read = 0;
     }
     rv = read(conn->fd, &conn->recv_buf[conn->recv_buf_size], cap);
-#ifdef DEBUG
-    printf("read %zu bytes(up to %zu) errno=%d \n", rv, cap, errno);
-#endif
+    LOG_DEBUG("read %zu bytes(up to %zu) errno=%d", rv, cap, errno);
   } while (rv < 0 && errno == EINTR);
 
   if (rv < 0 && errno == EAGAIN) {
@@ -328,16 +315,16 @@ bool try_fill_buffer(Shard *shard, Conn *conn) {
   }
 
   if (rv < 0) {
-    warn("read() error");
+    LOG_WARN("read() error");
     conn->state = END;
     return false;
   }
 
   if (rv == 0) {
     if (conn->recv_buf_size > 0) {
-      warn("unexpected EOF");
+      LOG_WARN("unexpected EOF");
     } else {
-      info("EOF");
+      LOG_INFO("EOF");
     }
 
     conn->state = END;
@@ -379,8 +366,7 @@ void epoll_register(int fd_epoll, int fd, uint32_t events) {
 	ev.events = events;
 	ev.data.fd = fd;
 	if (epoll_ctl(fd_epoll, EPOLL_CTL_ADD, fd, &ev) == -1) {
-		perror("epoll_ctl()\n");
-		exit(1);
+		panic("epoll_ctl()");
 	}
 }
 
@@ -389,8 +375,7 @@ void epoll_unregister(int fd_epoll, int fd) {
   ev.events = 0;
   ev.data.fd = fd;
   if (epoll_ctl(fd_epoll, EPOLL_CTL_DEL, fd, &ev) == -1) {
-    perror("epoll_ctl()\n");
-    exit(1);
+		panic("epoll_ctl()");
   }
 }
 
@@ -399,8 +384,7 @@ void epoll_modify(int fd_epoll, int fd, uint32_t events) {
   ev.events = events;
   ev.data.fd = fd;
   if (epoll_ctl(fd_epoll, EPOLL_CTL_MOD, fd, &ev) == -1) {
-    perror("epoll_ctl()\n");
-    exit(1);
+		panic("epoll_ctl()");
   }
 }
 
@@ -475,7 +459,7 @@ void run_loop(void *arg) {
 
   int rv = bind(fd_listener, (struct sockaddr *)&addr, sizeof(addr));
   if (rv) {
-    printf("errno=%d\n", errno);
+    LOG_DEBUG("errno=%d", errno);
     panic("bind()");
   }
 
@@ -486,12 +470,12 @@ void run_loop(void *arg) {
 
   fd_set_nb(fd_listener);
 
-  printf("fd_listener=%d\n", fd_listener);
+  LOG_DEBUG("fd_listener=%d", fd_listener);
 
   int fd_epoll = epoll_create(1);
-  printf("fd_epoll=%d\n", fd_epoll);
+  LOG_DEBUG("fd_epoll=%d", fd_epoll);
   epoll_register(fd_epoll, fd_listener, EPOLLIN);
-  printf("listening\n");
+  LOG_DEBUG("listening");
 
   epoll_register(fd_epoll, shard->queue_efd, EPOLLIN);
 
@@ -507,6 +491,7 @@ void run_loop(void *arg) {
       exit(1);
     }
 
+    bool reset_queue_efd = false;
     for (int i = 0; i < nfds; i++) {
       if (events[i].data.fd == fd_listener) {
         int fd = accept_new_conn(shard, fd_listener);
@@ -515,8 +500,7 @@ void run_loop(void *arg) {
         }
         epoll_register(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
       } else if (events[i].data.fd == shard->queue_efd) {
-        uint64_t val = 0; 
-        read(shard->queue_efd, &val, sizeof(val));
+        reset_queue_efd = true;
       } else {
         struct epoll_event ev = events[i];
         int fd = ev.data.fd;
@@ -526,13 +510,13 @@ void run_loop(void *arg) {
         deque_move_to_back(&shard->idle_conn_queue, conn->idle_conn_queue_node);
         if (ev.events & EPOLLIN) {
           if ((conn->state & DISPATCH_WAITING) == 0) {
-            // printf("[ EPOLLIN] fd=%d shard_id=%zu\n", conn->fd, shard->shard_id);
+            // LOG_DEBUG("[ EPOLLIN] fd=%d shard_id=%zu\n", conn->fd, shard->shard_id);
             state_request_epoll(shard, conn);
           } else {
-            // printf("[ EPOLLIN] while in DISPATCH_WAITING state\n");
+            // LOG_DEBUG("[ EPOLLIN] while in DISPATCH_WAITING state\n");
           }
         } else if (ev.events & EPOLLOUT) {
-          printf("EPOLLOUT\n");
+          LOG_DEBUG("EPOLLOUT");
           state_response(conn);
           epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
         }
@@ -551,6 +535,11 @@ void run_loop(void *arg) {
           }
         }
       }
+    }
+
+    if (reset_queue_efd) {
+      uint64_t val = 0; 
+      read(shard->queue_efd, &val, sizeof(val));
     }
 
     // TODO: this should stay here until we have proper write signalling
