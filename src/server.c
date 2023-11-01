@@ -53,7 +53,7 @@ void init_shards(GRState *gr_state) {
     }
 
     shard->queue_efd = queue_efd;
-    shard->cb_queue = mpscq_create(NULL, 1024);
+    shard->cb_queue = mpscq_create(NULL, 100000);
 
     int seed = time(NULL);
     shard->dbs = (struct hashmap **)malloc(sizeof(struct hashmap *) * gr_state->num_dbs);

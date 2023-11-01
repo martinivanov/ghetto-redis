@@ -106,154 +106,149 @@ void cmd_quit(Shard *shard, Conn *conn, const CmdArgs *args) {
     write_simple_string(conn, "OK", 2);
 }
 
-void cmd_get_shard_resp_cb(Shard *shard, GetShardResp *resp) {
-  LOG_DEBUG_WITH_CTX(shard->shard_id, "get shard resp cb");
-  CBContext *cb_ctx = (CBContext *)resp;
-  Conn *conn = cb_ctx->conn;
+// DEFINE_COMMAND(get, 
+//   GetShardReq, 
+//   GetShardResp,
+//   Entry *entry;,
+//   {},
+//   EMPTY_CMD_VARS_INIT,
+//   {     
+//     ctx->ctx.key = malloc(keylen);
+//     memcpy(ctx->ctx.key, key, keylen);
+//     ctx->ctx.keylen = keylen;
+//     ctx->ctx.hash = hash; 
+//   }, {
+//   }, {
+//     entry = (Entry *)hashmap_get_with_hash(db, &(Entry){.key = key, .keylen = keylen}, hash);
+//   }, {
+//     free(keyed_ctx->key);
+//     resp_ctx->entry = entry;
+//   }, {
+//     entry = ctx->entry;
+//   }, {
+//     if (entry) {
+//       write_bulk_string(conn, entry->val, entry->vallen);
+//     } else {
+//       write_null_bulk_string(conn);
+//     }
+//   }, {})
 
-  Entry *entry = resp->entry;
-  if (entry) {
-    write_bulk_string(conn, entry->val, entry->vallen);
-  } else {
-    write_null_bulk_string(conn);
-  }
 
-  conn->state &= ~DISPATCH_WAITING;
-  write(shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
-}
 
-void cmd_get_shard_req_cb(Shard *shard, GetShardReq *req) {
-  LOG_DEBUG_WITH_CTX(shard->shard_id, "get shard req cb");
-  CBContext *cb_ctx = (CBContext *)req;
-  KeyedCBContext *keyed_ctx = (KeyedCBContext*)req;
-  struct hashmap *db = cb_ctx->dst->dbs[cb_ctx->conn->db];
-
-  Entry *entry = (Entry *)hashmap_get_with_hash(db, &(Entry){.key = keyed_ctx->key, .keylen = keyed_ctx->keylen}, keyed_ctx->hash);
-
-  GetShardResp *resp = (GetShardResp *)malloc(sizeof(GetShardResp));
-  fill_req_cb_ctx((CBContext *)resp, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)cmd_get_shard_resp_cb);
-  resp->entry = entry;
-
-  mpscq_enqueue(cb_ctx->src->cb_queue, resp);
-  write(cb_ctx->src->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
-  free(keyed_ctx->key);
-}
-
-void cmd_get(Shard *shard, Conn *conn, const CmdArgs *args) {
-  LOG_DEBUG_WITH_CTX(shard->shard_id, "get");
-  const GRState *gr_state = shard->gr_state;
-  const uint8_t *key = args->buf + args->offsets[1];
-  const size_t keylen = args->lens[1];
-  const uint64_t hash = hashmap_xxhash3(key, keylen, 0, 0);
-
-  size_t shard_id = hash % gr_state->num_shards;
-
-  LOG_DEBUG_WITH_CTX(shard->shard_id, "key %.*s hashed to shard_id: %zu", keylen, key, shard_id);
-
-  //if (shard_id == shard->shard_id) {
-  if (false) {
-    struct hashmap *db = shard->dbs[conn->db];
+DEFINE_COMMAND(
+  get, 
+  GetShardReq, 
+  GetShardResp,
+  CMD_VARS(
+    uint8_t *key = key_buf_ptr;
+  ),
+  CMD_PRE_INLINE_EXEC(),
+  CMD_EXEC(
     Entry *entry = (Entry *)hashmap_get_with_hash(db, &(Entry){.key = key, .keylen = keylen}, hash);
+  ),
+  CMD_RESP(
     if (entry) {
       write_bulk_string(conn, entry->val, entry->vallen);
     } else {
       write_null_bulk_string(conn);
     }
-  } else {
-    Shard *target_shard = &gr_state->shards[shard_id];
+  ),
+  CMD_PRE_DISPATCH(
+    ctx->ctx.key = malloc(keylen);
+    memcpy(ctx->ctx.key, key, keylen);
+    ctx->ctx.keylen = keylen;
+    ctx->ctx.hash = hash; 
+  ),
+  CMD_PRE_DISPATCH_EXEC(),
+  CMD_POST_DISPATCH_EXEC(
+    free(keyed_ctx->key);
+    resp_ctx->entry = entry;
+  ),
+  CMD_PRE_RESP(
+   Entry *entry = ctx->entry; 
+  ),
+  CMD_POST_RESP()
+)
 
-    GetShardReq *req = (GetShardReq *)malloc(sizeof(GetShardReq));
-    fill_req_cb_ctx((CBContext *)req, shard, target_shard, conn, (dispatch_cb)cmd_get_shard_req_cb);
-    req->ctx.key = malloc(keylen);
-    memcpy(req->ctx.key, key, keylen);
-    req->ctx.keylen = keylen;
-    req->ctx.hash = hash;
+// DEFINE_COMMAND(set, 
+//   SetShardReq, 
+//   SimpleOKResp,
+//   Entry *entry;
+//   uint8_t *val;
+//   size_t vallen;, 
+//   EMPTY_CMD_VARS_INIT, {
+//     uint8_t *key_copy = malloc(keylen);
+//     memcpy(key_copy, key, keylen);
+//     key = key_copy;
+//     vallen = args->lens[2];
+//     val = (uint8_t *)malloc(vallen);
+//     memcpy((void *)val, args->buf + args->offsets[2], vallen); 
+//   },
+//   {     
+//     uint8_t *key_copy = malloc(keylen);
+//     memcpy(key_copy, key, keylen);
+//     ctx->ctx.key = (uint8_t *)key_copy;
+//     ctx->ctx.keylen = (size_t)keylen;
+//     ctx->ctx.hash = (size_t)hash;
+//     vallen = args->lens[2];
+//     val = (uint8_t *)malloc(vallen);
+//     memcpy((void *)val, args->buf + args->offsets[2], vallen);
+//     ctx->val = (uint8_t *)val;
+//     ctx->vallen = (size_t)vallen;
+//   }, {
+//     val = ctx->val;
+//     vallen = ctx->vallen;
+//   }, {
+//     entry = ENTRY_INIT
+//     Entry *existing = (Entry *)hashmap_set_with_hash(db, entry, hash);
+//     if (existing) {
+//       entry_free((void*)existing);
+//     }
+//   }, {
+//   }, {
+//   }, {
+//     write_simple_string(conn, "OK", 2);
+//   }, {})
 
-    if (mpscq_enqueue(target_shard->cb_queue, req)) {
-      conn->state |= DISPATCH_WAITING;
-      write(target_shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
-    } else {
-      write_simple_generic_error(conn, "shard dispatch queue full");
-    }
-  }
-}
-
-void cmd_set_shard_resp_cb(Shard *shard, SimpleOKResp *resp) {
-  LOG_DEBUG_WITH_CTX(shard->shard_id, "set shard resp cb");
-  CBContext *cb_ctx = (CBContext *)resp;
-  Conn *conn = cb_ctx->conn;
-
-  write_simple_string(conn, "OK", 2);
-
-  conn->state &= ~DISPATCH_WAITING;
-  write(shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
-}
-
-void cmd_set_shard_req_cb(Shard *shard, SetShardReq *req) {
-  LOG_DEBUG_WITH_CTX(shard->shard_id, "set shard req cb");
-  CBContext *cb_ctx = (CBContext *)req;
-  KeyedCBContext *keyed_ctx = (KeyedCBContext*)req;
-  struct hashmap *db = cb_ctx->dst->dbs[cb_ctx->conn->db];
-
-  Entry *entry = &(Entry){.key = keyed_ctx->key, .keylen = keyed_ctx->keylen, .val = req->val, .vallen = req->vallen};
-  Entry *existing = (Entry *)hashmap_set_with_hash(db, entry, keyed_ctx->hash);
-  if (existing) {
-    entry_free((void*)existing);
-  }
-
-  SimpleOKResp *resp = (SimpleOKResp *)malloc(sizeof(SimpleOKResp));
-  fill_req_cb_ctx((CBContext *)resp, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)cmd_set_shard_resp_cb);
-
-  if (mpscq_enqueue(cb_ctx->src->cb_queue, resp)) {
-    write(cb_ctx->src->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
-  }
-}
-
-void cmd_set(Shard *shard, Conn *conn, const CmdArgs *args) {
-  LOG_DEBUG_WITH_CTX(shard->shard_id, "set");
-    const size_t keylen = args->lens[1];
-    uint8_t *key = (uint8_t *)malloc(keylen);
-    memcpy((void *)key, args->buf + args->offsets[1], keylen);
-    const uint64_t hash = hashmap_xxhash3(key, keylen, 0, 0);
-
-    const size_t vallen = args->lens[2];
-    const uint8_t *val = (uint8_t *)malloc(vallen);
+DEFINE_COMMAND(
+  set, 
+  SetShardReq, 
+  SimpleOKResp,
+  CMD_VARS(
+    uint8_t *key = malloc(keylen);
+    memcpy(key, key_buf_ptr, keylen);
+    
+    size_t vallen = args->lens[2];
+    uint8_t *val = (uint8_t *)malloc(vallen); 
     memcpy((void *)val, args->buf + args->offsets[2], vallen);
-
-    size_t shard_id = hash % shard->gr_state->num_shards;
-
-    LOG_DEBUG_WITH_CTX(shard->shard_id, "key %.*s hashed to shard_id: %zu", keylen, key, shard_id);
-
-    //if (shard_id == shard->shard_id) {
-    if (false) {
-      struct hashmap *db = shard->dbs[conn->db];
-
-      Entry *entry = &(Entry){.key = key, .keylen = keylen, .val = val, .vallen = vallen};
-      Entry *existing = (Entry *)hashmap_set_with_hash(db, entry, hash);
-      if (existing) {
-        entry_free((void*)existing);
-      }
-      write_simple_string(conn, "OK", 2);
-    } else {
-      GRState *gr_state = shard->gr_state;
-      Shard *target_shard = &gr_state->shards[shard_id];
-
-      SetShardReq *req = (SetShardReq *)malloc(sizeof(SetShardReq));
-      fill_req_cb_ctx((CBContext *)req, shard, target_shard, conn, (dispatch_cb)cmd_set_shard_req_cb);
-      req->ctx.key = (uint8_t *)key;
-      req->ctx.keylen = (size_t)keylen;
-      req->ctx.hash = (size_t)hash;
-      req->val = (uint8_t *)val;
-      req->vallen = (size_t)vallen;
-
-      if (mpscq_enqueue(target_shard->cb_queue, req)) {
-        conn->state |= DISPATCH_WAITING;
-        write(target_shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
-      } else {
-        write_simple_generic_error(conn, "shard dispatch queue full");
-      }
+  ),
+  CMD_PRE_INLINE_EXEC(),
+  CMD_EXEC(
+    Entry *entry = ENTRY_INIT(key, keylen, val, vallen);
+    Entry *existing = (Entry *)hashmap_set_with_hash(db, entry, hash);
+    if (existing) {
+      entry_free((void*)existing);
     }
-}
+  ),
+  CMD_RESP(
+    write_simple_string(conn, "OK", 2);
+  ),
+  CMD_PRE_DISPATCH(
+    ctx->ctx.key = (uint8_t *)key;
+    ctx->ctx.keylen = (size_t)keylen;
+    ctx->ctx.hash = (size_t)hash;
+    ctx->val = (uint8_t *)val;
+    ctx->vallen = (size_t)vallen;
+  ),
+  CMD_PRE_DISPATCH_EXEC(
+    size_t vallen = ctx->vallen;
+    uint8_t *val = ctx->val;
+  ),
+  CMD_POST_DISPATCH_EXEC(),
+  CMD_PRE_RESP(),
+  CMD_POST_RESP()
+)
+
 
 void cmd_del_shard_resp_cb(Shard *shard, IntegerResp *resp) {
   CBContext *cb_ctx = (CBContext *)resp;
@@ -543,3 +538,4 @@ void cmd_mset(Shard *shard, Conn *conn, const CmdArgs *args) {
 
   write_simple_string(conn, "OK", 2);
 }
+
