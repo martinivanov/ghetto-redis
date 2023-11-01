@@ -237,10 +237,6 @@ bool try_handle_request(Shard *shard, Conn *conn) {
     return false;
   }
 
-  if (conn->state & DISPATCH_WAITING) {
-    return false;
-  }  
-
   uint8_t *buf = conn->recv_buf + conn->recv_buf_read;
   CmdArgs args;
   ParseError err;
@@ -250,6 +246,8 @@ bool try_handle_request(Shard *shard, Conn *conn) {
     err = parse_inline_request(conn, &args);
   }
   assert(conn->send_buf_sent <= conn->send_buf_size);
+
+  LOG_DEBUG_WITH_CTX(shard->shard_id, "try_handle_request() err=%d buf='%.*s'", err, (int)conn->recv_buf_size, conn->recv_buf + conn->recv_buf_read);
 
   switch (err) {
     case PARSE_OK:
@@ -293,45 +291,51 @@ bool try_handle_request(Shard *shard, Conn *conn) {
   return conn->recv_buf_size > 0;
 }
 
-bool try_fill_buffer(Shard *shard, Conn *conn) {
+bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
   assert(conn->recv_buf_size < sizeof(conn->recv_buf));
 
-  ssize_t rv = 0;
-  do {
-    size_t cap = sizeof(conn->recv_buf) - conn->recv_buf_size;
-    if (conn->recv_buf_read > 0) {
-      LOG_DEBUG_WITH_CTX(shard->shard_id, "compacting buffer by moving %zu byte from offset %zu to 0", conn->recv_buf_size, conn->recv_buf_read);
-      memmove(conn->recv_buf, &conn->recv_buf[conn->recv_buf_read], conn->recv_buf_size);
-      conn->recv_buf_read = 0;
-    }
-    rv = read(conn->fd, &conn->recv_buf[conn->recv_buf_size], cap);
-    LOG_DEBUG_WITH_CTX(shard->shard_id, "read %zu bytes(up to %zu) errno=%d", rv, cap, errno);
-  } while (rv < 0 && errno == EINTR);
-
-  if (rv < 0 && errno == EAGAIN) {
-    // got EAGAIN, stop.
+  if (conn->state & DISPATCH_WAITING) {
     return false;
-  }
+  }  
 
-  if (rv < 0) {
-    LOG_WARN("read() error");
-    conn->state = END;
-    return false;
-  }
+  if (io) {
+    ssize_t rv = 0;
+    do {
+      size_t cap = sizeof(conn->recv_buf) - conn->recv_buf_size;
+      if (conn->recv_buf_read > 0) {
+        LOG_DEBUG_WITH_CTX(shard->shard_id, "compacting buffer by moving %zu byte from offset %zu to 0", conn->recv_buf_size, conn->recv_buf_read);
+        memmove(conn->recv_buf, &conn->recv_buf[conn->recv_buf_read], conn->recv_buf_size);
+        conn->recv_buf_read = 0;
+      }
+      rv = read(conn->fd, &conn->recv_buf[conn->recv_buf_size], cap);
+      LOG_DEBUG_WITH_CTX(shard->shard_id, "read %zu bytes(up to %zu) errno=%d", rv, cap, errno);
+    } while (rv < 0 && errno == EINTR);
 
-  if (rv == 0) {
-    if (conn->recv_buf_size > 0) {
-      LOG_WARN("unexpected EOF");
-    } else {
-      LOG_INFO("EOF");
+    if (rv < 0 && errno == EAGAIN) {
+      // got EAGAIN, stop.
+      return false;
     }
 
-    conn->state = END;
-    return false;
-  }
+    if (rv < 0) {
+      LOG_WARN("read() error");
+      conn->state = END;
+      return false;
+    }
 
-  conn->recv_buf_size += (size_t)rv;
-  assert(conn->recv_buf_size <= sizeof(conn->recv_buf));
+    if (rv == 0) {
+      if (conn->recv_buf_size > 0) {
+        LOG_WARN("unexpected EOF");
+      } else {
+        LOG_INFO("EOF");
+      }
+
+      conn->state = END;
+      return false;
+    }
+
+    conn->recv_buf_size += (size_t)rv;
+    assert(conn->recv_buf_size <= sizeof(conn->recv_buf));
+  }
 
   while (try_handle_request(shard, conn)) {
   }
@@ -340,12 +344,14 @@ bool try_fill_buffer(Shard *shard, Conn *conn) {
 }
 
 void state_request_cb(Shard *shard, Conn *conn) {
-  while (try_fill_buffer(shard, conn)) {
+  LOG_DEBUG_WITH_CTX(shard->shard_id, "state_request_cb");
+  while (try_fill_buffer(shard, conn, false)) {
   }
 }
 
 void state_request_epoll(Shard *shard, Conn *conn) {
-  while (try_fill_buffer(shard, conn)) {
+  LOG_DEBUG_WITH_CTX(shard->shard_id, "state_request_epoll");
+  while (try_fill_buffer(shard, conn, true)) {
   }
 }
 
@@ -434,7 +440,7 @@ void execute_callbacks(Shard *shard) {
 
       if (c->send_buf_size > c->send_buf_sent) {
         deque_push_back_and_attach(shard->pending_writes_queue, c, Conn, pending_writes_queue_node);
-        //write(shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
+        write(shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
       }
     }
 
@@ -566,7 +572,7 @@ void run_loop(void *arg) {
   }
 }
 
-const size_t NUM_THREADS = 2;
+const size_t NUM_THREADS = 4;
 
 int main() {
   Shard shards[NUM_THREADS];
