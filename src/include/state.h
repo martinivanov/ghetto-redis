@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdatomic.h>
 
 #include "deque.h"
 #include "hashmap.h"
@@ -17,6 +18,7 @@ typedef struct {
   vector_Conn_ptr *conns;
   Deque idle_conn_queue;
   Deque pending_writes_queue;
+  atomic_bool notify_cb;
   int queue_efd;
   struct mpscq *cb_queue;
   struct hashmap **dbs;

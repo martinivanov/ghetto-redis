@@ -428,6 +428,7 @@ uint64_t close_idle_connections(Shard *shard) {
 
 void execute_callbacks(Shard *shard) {
   CBContext *ctx = mpscq_dequeue(shard->cb_queue);
+  bool notify = false;
   while (ctx != NULL) {
     void *arg = ctx;
     ctx->cb(shard, arg);
@@ -440,12 +441,16 @@ void execute_callbacks(Shard *shard) {
 
       if (c->send_buf_size > c->send_buf_sent) {
         deque_push_back_and_attach(shard->pending_writes_queue, c, Conn, pending_writes_queue_node);
-        write(shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
+        notify = true;
       }
     }
 
     free(ctx);
     ctx = mpscq_dequeue(shard->cb_queue);
+  }
+
+  if (notify) {
+    write(shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
   }
 }
 
@@ -558,6 +563,13 @@ void run_loop(void *arg) {
     }
 
     execute_callbacks(shard);
+
+    for (size_t i = 0; i < shard->gr_state->num_shards; i++) {
+      Shard *s = &shard->gr_state->shards[i];
+      if (atomic_exchange(&s->notify_cb, false)) {
+        write(s->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
+      }
+    }
 
     timeout = close_idle_connections(shard);
   }

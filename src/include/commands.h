@@ -59,7 +59,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
     cmd_resp                                                              \
     cmd_post_resp                                                         \
     conn->state &= ~DISPATCH_WAITING;                                     \
-    write(shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));              \
+    atomic_store(&shard->notify_cb, true);                                 \
   }\
   void __cmd_##name##_req(Shard *shard, __##name##_req_t *ctx)                       \
   {                                                                       \
@@ -73,7 +73,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
     fill_req_cb_ctx((CBContext *)resp_ctx, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)__cmd_##name##_resp); \
     cmd_post_dispatch_exec                                                       \
     mpscq_enqueue(cb_ctx->src->cb_queue, resp_ctx);\
-    write(cb_ctx->src->queue_efd, &(uint64_t){1}, sizeof(uint64_t));\
+    atomic_store(&cb_ctx->src->notify_cb, true);                          \
   }                                                                       \
   void cmd_##name(Shard *shard, Conn *conn, const CmdArgs *args)          \
   {                                                                       \
@@ -95,7 +95,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
       cmd_pre_dispatch                                                            \
       if (mpscq_enqueue(target_shard->cb_queue, ctx)) {                   \
         conn->state |= DISPATCH_WAITING;\
-        write(target_shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));\
+        atomic_store(&target_shard->notify_cb, true);                       \
       } else {\
         write_simple_generic_error(conn, "shard dispatch queue full");\
       }\
