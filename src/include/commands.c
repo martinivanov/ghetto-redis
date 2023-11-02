@@ -106,39 +106,12 @@ void cmd_quit(Shard *shard, Conn *conn, const CmdArgs *args) {
     write_simple_string(conn, "OK", 2);
 }
 
-// DEFINE_COMMAND(get, 
-//   GetShardReq, 
-//   GetShardResp,
-//   Entry *entry;,
-//   {},
-//   EMPTY_CMD_VARS_INIT,
-//   {     
-//     ctx->ctx.key = malloc(keylen);
-//     memcpy(ctx->ctx.key, key, keylen);
-//     ctx->ctx.keylen = keylen;
-//     ctx->ctx.hash = hash; 
-//   }, {
-//   }, {
-//     entry = (Entry *)hashmap_get_with_hash(db, &(Entry){.key = key, .keylen = keylen}, hash);
-//   }, {
-//     free(keyed_ctx->key);
-//     resp_ctx->entry = entry;
-//   }, {
-//     entry = ctx->entry;
-//   }, {
-//     if (entry) {
-//       write_bulk_string(conn, entry->val, entry->vallen);
-//     } else {
-//       write_null_bulk_string(conn);
-//     }
-//   }, {})
-
-
-
 DEFINE_COMMAND(
   get, 
-  GetShardReq, 
-  GetShardResp,
+  KEYED_REQ_CTX(), 
+  RESP_CTX(
+    Entry *entry;
+  ),
   CMD_VARS(
     uint8_t *key = key_buf_ptr;
   ),
@@ -170,50 +143,13 @@ DEFINE_COMMAND(
   CMD_POST_RESP()
 )
 
-// DEFINE_COMMAND(set, 
-//   SetShardReq, 
-//   SimpleOKResp,
-//   Entry *entry;
-//   uint8_t *val;
-//   size_t vallen;, 
-//   EMPTY_CMD_VARS_INIT, {
-//     uint8_t *key_copy = malloc(keylen);
-//     memcpy(key_copy, key, keylen);
-//     key = key_copy;
-//     vallen = args->lens[2];
-//     val = (uint8_t *)malloc(vallen);
-//     memcpy((void *)val, args->buf + args->offsets[2], vallen); 
-//   },
-//   {     
-//     uint8_t *key_copy = malloc(keylen);
-//     memcpy(key_copy, key, keylen);
-//     ctx->ctx.key = (uint8_t *)key_copy;
-//     ctx->ctx.keylen = (size_t)keylen;
-//     ctx->ctx.hash = (size_t)hash;
-//     vallen = args->lens[2];
-//     val = (uint8_t *)malloc(vallen);
-//     memcpy((void *)val, args->buf + args->offsets[2], vallen);
-//     ctx->val = (uint8_t *)val;
-//     ctx->vallen = (size_t)vallen;
-//   }, {
-//     val = ctx->val;
-//     vallen = ctx->vallen;
-//   }, {
-//     entry = ENTRY_INIT
-//     Entry *existing = (Entry *)hashmap_set_with_hash(db, entry, hash);
-//     if (existing) {
-//       entry_free((void*)existing);
-//     }
-//   }, {
-//   }, {
-//   }, {
-//     write_simple_string(conn, "OK", 2);
-//   }, {})
-
 DEFINE_COMMAND(
   set, 
-  SetShardReq, 
-  SimpleOKResp,
+  KEYED_REQ_CTX(
+    uint8_t *val;
+    size_t vallen;
+  ), 
+  RESP_CTX(),
   CMD_VARS(
     uint8_t *key = malloc(keylen);
     memcpy(key, key_buf_ptr, keylen);
@@ -249,73 +185,43 @@ DEFINE_COMMAND(
   CMD_POST_RESP()
 )
 
-
-void cmd_del_shard_resp_cb(Shard *shard, IntegerResp *resp) {
-  CBContext *cb_ctx = (CBContext *)resp;
-  Conn *conn = cb_ctx->conn;
-
-  write_integer(conn, resp->val);
-
-  conn->state &= ~DISPATCH_WAITING;
-  //deque_push_back_and_attach(shard->pending_writes_queue, conn, Conn, pending_writes_queue_node);
-}
-
-void cmd_del_shard_req_cb(Shard *shard, DelShardReq *resp) {
-  CBContext *cb_ctx = (CBContext *)resp;
-  KeyedCBContext *keyed_ctx = (KeyedCBContext*)cb_ctx;
-
-  struct hashmap *db = cb_ctx->dst->dbs[cb_ctx->conn->db];
-  const void *entry = hashmap_delete_with_hash(db, &(Entry){.key = keyed_ctx->key, .keylen = keyed_ctx->keylen}, keyed_ctx->hash);
-  uint64_t res = 0;
-  if (entry) {
-    entry_free((void*)entry);
-    res = 1;
-  } 
-
-  IntegerResp *int_resp = (IntegerResp *)malloc(sizeof(IntegerResp));
-  fill_req_cb_ctx((CBContext *)int_resp, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)cmd_del_shard_resp_cb);
-  int_resp->val = res;
-
-  mpscq_enqueue(cb_ctx->src->cb_queue, int_resp);
-  write(cb_ctx->src->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
-  free(keyed_ctx->key);
-}
-
-void cmd_del(Shard *shard, Conn *conn, const CmdArgs *args) {
-  const uint8_t *key = args->buf + args->offsets[1];
-  const size_t keylen = args->lens[1];
-  const uint64_t hash = hashmap_xxhash3(key, keylen, 0, 0);
-    
-  size_t shard_id = hash % shard->gr_state->num_shards;
-
-  //if (shard_id == shard->shard_id) {
-  if (false) {
-    struct hashmap *db = shard->dbs[conn->db];
-    const void *entry = hashmap_delete(db, &(Entry){.key = (void *)key, .keylen = keylen});
+DEFINE_COMMAND(
+  del, 
+  KEYED_REQ_CTX(), 
+  RESP_CTX(
+    uint64_t res;
+  ),
+  CMD_VARS(
+    uint8_t *key = key_buf_ptr;
+  ),
+  CMD_PRE_INLINE_EXEC(),
+  CMD_EXEC(
+    const void *entry = hashmap_delete_with_hash(db, &(Entry){.key = key, .keylen = keylen}, hash);
+    uint64_t res = 0;
     if (entry) {
       entry_free((void*)entry);
-      write_integer(conn, 1);
-    } else {
-      write_integer(conn, 0);
-    }
-  } else {
-    Shard *target_shard = &shard->gr_state->shards[shard_id];
-
-    DelShardReq *req = (DelShardReq *)malloc(sizeof(DelShardReq));
-    fill_req_cb_ctx((CBContext *)req, shard, target_shard, conn, (dispatch_cb)cmd_del_shard_req_cb);
-    req->ctx.key = malloc(keylen);
-    memcpy(req->ctx.key, key, keylen);
-    req->ctx.keylen = keylen;
-    req->ctx.hash = hash;
-
-    if (mpscq_enqueue(target_shard->cb_queue, req)) {
-      conn->state |= DISPATCH_WAITING;
-      write(target_shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
-    } else {
-      write_simple_generic_error(conn, "shard dispatch queue full");
-    }
-  }
-}
+      res = 1;
+    } 
+  ),
+  CMD_RESP(
+    write_integer(conn, res);
+  ),
+  CMD_PRE_DISPATCH(
+    ctx->ctx.key = malloc(keylen);
+    memcpy(ctx->ctx.key, key, keylen);
+    ctx->ctx.keylen = keylen;
+    ctx->ctx.hash = hash;
+  ),
+  CMD_PRE_DISPATCH_EXEC(),
+  CMD_POST_DISPATCH_EXEC(
+    free(keyed_ctx->key);
+    resp_ctx->res = res;
+  ),
+  CMD_PRE_RESP(
+    uint64_t res = ctx->res;
+  ),
+  CMD_POST_RESP()
+)
 
 void cmd_shutdown(Shard *shard, Conn *conn, const CmdArgs *args) {
   (void)conn;
@@ -538,4 +444,3 @@ void cmd_mset(Shard *shard, Conn *conn, const CmdArgs *args) {
 
   write_simple_string(conn, "OK", 2);
 }
-
