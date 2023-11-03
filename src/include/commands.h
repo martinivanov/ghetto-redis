@@ -82,6 +82,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
     const size_t keylen = args->lens[1];                                  \
     const uint64_t hash = hashmap_xxhash3(key_buf_ptr, keylen, 0, 0);             \
     const size_t shard_id = hash % gr_state->num_shards;                  \
+    LOG_DEBUG_WITH_CTX(shard->shard_id, "dispatching %s to shard %zu", #name, shard_id); \
     cmd_vars                                                              \
     if (shard_id == shard->shard_id) {                                    \
       struct hashmap *db = shard->dbs[conn->db];                        \
@@ -145,5 +146,6 @@ void cmd_decrby(Shard *shard, Conn *conn, const CmdArgs *args);
 void cmd_clients(Shard *shard, Conn *conn, const CmdArgs *args);
 void cmd_mget(Shard *shard, Conn *conn, const CmdArgs *args);
 void cmd_mset(Shard *shard, Conn *conn, const CmdArgs *args);
+void cmd_dispatch_ping(Shard *shard, Conn *conn, const CmdArgs *args);
 
 #endif

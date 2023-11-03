@@ -60,6 +60,7 @@ struct hashmap* init_commands() {
   register_command(commands, "CLIENTS", 0, cmd_clients);
   register_command(commands, "MGET", VAR_ARGC, cmd_mget);
   register_command(commands, "MSET", VAR_ARGC, cmd_mset);
+  register_command(commands, "DPING", 1, cmd_dispatch_ping);
 
   return commands;
 }
@@ -444,3 +445,29 @@ void cmd_mset(Shard *shard, Conn *conn, const CmdArgs *args) {
 
   write_simple_string(conn, "OK", 2);
 }
+
+DEFINE_COMMAND(
+  dispatch_ping,
+  KEYED_REQ_CTX(),
+  RESP_CTX(),
+  CMD_VARS(
+    uint8_t *key = key_buf_ptr;
+  ),
+  CMD_PRE_INLINE_EXEC(),
+  CMD_EXEC(),
+  CMD_RESP(
+    write_integer(conn, 1);
+  ),
+  CMD_PRE_DISPATCH(
+    ctx->ctx.key = malloc(keylen);
+    memcpy(ctx->ctx.key, key, keylen);
+    ctx->ctx.keylen = keylen;
+    ctx->ctx.hash = hash; 
+  ),
+  CMD_PRE_DISPATCH_EXEC(),
+  CMD_POST_DISPATCH_EXEC(
+    free(keyed_ctx->key);
+  ),
+  CMD_PRE_RESP(),
+  CMD_POST_RESP()
+)

@@ -112,8 +112,6 @@ void conn_put(vector_Conn_ptr *conns, Conn *conn, size_t shard_id) {
   }
 
   conns->array[conn->fd] = conn;
-  // TODO: fix this - move it inside the vector logic or replace the vector with
-  // a proper map
   conns->used = conns->size;
 }
 
@@ -501,7 +499,6 @@ void run_loop(void *arg) {
       exit(1);
     }
 
-    bool reset_queue_efd = false;
     for (int i = 0; i < nfds; i++) {
       if (events[i].data.fd == fd_listener) {
         int fd = accept_new_conn(shard, fd_listener);
@@ -510,7 +507,8 @@ void run_loop(void *arg) {
         }
         epoll_register(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
       } else if (events[i].data.fd == shard->queue_efd) {
-        reset_queue_efd = true;
+        uint64_t val = 0; 
+        read(shard->queue_efd, &val, sizeof(val));
       } else {
         struct epoll_event ev = events[i];
         int fd = ev.data.fd;
@@ -520,10 +518,7 @@ void run_loop(void *arg) {
         deque_move_to_back(&shard->idle_conn_queue, conn->idle_conn_queue_node);
         if (ev.events & EPOLLIN) {
           if ((conn->state & DISPATCH_WAITING) == 0) {
-            // LOG_DEBUG("[ EPOLLIN] fd=%d shard_id=%zu\n", conn->fd, shard->shard_id);
             state_request_epoll(shard, conn);
-          } else {
-            // LOG_DEBUG("[ EPOLLIN] while in DISPATCH_WAITING state\n");
           }
         } else if (ev.events & EPOLLOUT) {
           LOG_DEBUG("EPOLLOUT");
@@ -543,21 +538,6 @@ void run_loop(void *arg) {
             conn->state &= ~BLOCKED;
             epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
           }
-        }
-      }
-    }
-
-    if (reset_queue_efd) {
-      uint64_t val = 0; 
-      read(shard->queue_efd, &val, sizeof(val));
-    }
-
-    // TODO: this should stay here until we have proper write signalling
-    for (size_t i = 0; i < capacity_vector_Conn_ptr(shard->conns); i++) {
-      Conn *conn = shard->conns->array[i];
-      if (conn && conn->state != END) {
-        if (conn->send_buf_size != conn->send_buf_sent) {
-          deque_push_back_and_attach(shard->pending_writes_queue, conn, Conn, pending_writes_queue_node);
         }
       }
     }
@@ -584,7 +564,7 @@ void run_loop(void *arg) {
   }
 }
 
-const size_t NUM_THREADS = 4;
+const size_t NUM_THREADS = 2;
 
 int main() {
   Shard shards[NUM_THREADS];
