@@ -397,10 +397,17 @@ uint64_t flush_pending_writes(Shard *shard) {
     uint64_t count = 0;
     while (!deque_is_empty(&shard->pending_writes_queue)) {
       Conn *conn = deque_pop_front(&shard->pending_writes_queue);
-      count++;
       if (conn == NULL) {
         continue;
       }
+
+      //TODO: find a better way to avoid unnecessary writes
+      if (conn->send_buf_size == conn->send_buf_sent) {
+        continue;
+      }
+
+      count++;
+
       conn->pending_writes_queue_node = NULL;
       state_response(conn);
     }
@@ -442,7 +449,7 @@ uint64_t execute_callbacks(Shard *shard) {
 
     if (c->shard_id == shard->shard_id) { // our connection, we can handle IO
       if ((c->state & DISPATCH_WAITING) == 0) {
-        state_request_cb(shard, c);
+         state_request_cb(shard, c);
       }      
 
       if (c->send_buf_size > c->send_buf_sent) {
@@ -452,6 +459,7 @@ uint64_t execute_callbacks(Shard *shard) {
     }
 
     free(ctx);
+
     ctx = mpscq_dequeue(shard->cb_queue);
   }
 
@@ -508,9 +516,7 @@ void run_loop(void *arg) {
   int nfds = 0;
   struct epoll_event events[128];
   int timeout = -1;
-  uint64_t last_cb_time = get_monotonic_usec();
   while (shard->gr_state->running) {
-    uint64_t now_us = get_monotonic_usec();
     total_flushes += flush_pending_writes(shard);
 
     nfds = epoll_wait(fd_epoll, events, 128, timeout);

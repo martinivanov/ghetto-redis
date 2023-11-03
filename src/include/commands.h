@@ -10,6 +10,12 @@
 typedef void (*command_func)(Shard *shard, Conn* conn, const CmdArgs* args);
 typedef void (*dispatch_cb)(Shard *shard, void *ctx);
 
+#define ALLOW_INLINE_EXEC 1
+
+#ifndef ALLOW_INLINE_EXEC
+#define ALLOW_INLINE_EXEC 1
+#endif
+
 #define DECLARE_KEY_COPY                                                   \
   uint8_t *_key = malloc(keylen);                                          \
   memcpy(_key, key, keylen);
@@ -84,7 +90,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
     const size_t shard_id = hash % gr_state->num_shards;                  \
     LOG_DEBUG_WITH_CTX(shard->shard_id, "dispatching %s to shard %zu", #name, shard_id); \
     cmd_vars                                                              \
-    if (false) {                                    \
+    if (ALLOW_INLINE_EXEC && shard_id == shard->shard_id) {                                    \
       struct hashmap *db = shard->dbs[conn->db];                        \
       cmd_pre_inline_exec                                                 \
       cmd_exec                                                           \
