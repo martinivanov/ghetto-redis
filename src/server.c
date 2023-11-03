@@ -32,6 +32,12 @@
 #define unlikely(expr) __builtin_expect(!!(expr), 0)
 #define likely(expr) __builtin_expect(!!(expr), 1)
 
+static uint64_t get_monotonic_usec() {
+  struct timespec tv = {0, 0};
+  clock_gettime(CLOCK_MONOTONIC, &tv);
+  return tv.tv_sec * 1000000 + tv.tv_nsec / 1000;
+}
+
 void init_shards(GRState *gr_state) {
   Shard *shards = gr_state->shards;
   for (size_t i = 0; i < gr_state->num_shards; i++) {
@@ -55,13 +61,15 @@ void init_shards(GRState *gr_state) {
     shard->queue_efd = queue_efd;
     shard->cb_queue = mpscq_create(NULL, 100000);
 
-    int seed = time(NULL);
+    uint64_t seed = get_monotonic_usec(NULL);
     shard->dbs = (struct hashmap **)malloc(sizeof(struct hashmap *) * gr_state->num_dbs);
     for (size_t j = 0; j < gr_state->num_dbs; j++) {
       shard->dbs[j] = hashmap_new(sizeof(Entry), 1 << 20, seed, seed, entry_hash_xxhash3, entry_compare, entry_free, NULL);
     }
 
     shard->gr_state = gr_state;
+
+    shard->stats = (ShardStats){0};
   }
 }
 
@@ -113,12 +121,6 @@ void conn_put(vector_Conn_ptr *conns, Conn *conn, size_t shard_id) {
 
   conns->array[conn->fd] = conn;
   conns->used = conns->size;
-}
-
-static uint64_t get_monotonic_usec() {
-  struct timespec tv = {0, 0};
-  clock_gettime(CLOCK_MONOTONIC, &tv);
-  return tv.tv_sec * 1000000 + tv.tv_nsec / 1000;
 }
 
 int32_t accept_new_conn(Shard *shard, int fd_listener) {
@@ -292,10 +294,6 @@ bool try_handle_request(Shard *shard, Conn *conn) {
 bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
   assert(conn->recv_buf_size < sizeof(conn->recv_buf));
 
-  if (conn->state & DISPATCH_WAITING) {
-    return false;
-  }  
-
   if (io) {
     ssize_t rv = 0;
     do {
@@ -334,6 +332,10 @@ bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
     conn->recv_buf_size += (size_t)rv;
     assert(conn->recv_buf_size <= sizeof(conn->recv_buf));
   }
+
+  if (conn->state & DISPATCH_WAITING) {
+    return false;
+  }  
 
   while (try_handle_request(shard, conn)) {
   }
@@ -391,15 +393,19 @@ void epoll_modify(int fd_epoll, int fd, uint32_t events) {
   }
 }
 
-void flush_pending_writes(Shard *shard) {
+uint64_t flush_pending_writes(Shard *shard) {
+    uint64_t count = 0;
     while (!deque_is_empty(&shard->pending_writes_queue)) {
       Conn *conn = deque_pop_front(&shard->pending_writes_queue);
+      count++;
       if (conn == NULL) {
         continue;
       }
       conn->pending_writes_queue_node = NULL;
       state_response(conn);
     }
+
+    return count;
 }
 
 #define MAX_IDLE_MS 60000
@@ -424,10 +430,12 @@ uint64_t close_idle_connections(Shard *shard) {
   return MAX_IDLE_MS; 
 }
 
-void execute_callbacks(Shard *shard) {
+uint64_t execute_callbacks(Shard *shard) {
   CBContext *ctx = mpscq_dequeue(shard->cb_queue);
   bool notify = false;
+  uint64_t count = 0;
   while (ctx != NULL) {
+    count++;
     void *arg = ctx;
     ctx->cb(shard, arg);
     Conn *c = ctx->conn;
@@ -450,6 +458,8 @@ void execute_callbacks(Shard *shard) {
   if (notify) {
     write(shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
   }
+
+  return count;
 }
 
 void run_loop(void *arg) {
@@ -487,17 +497,29 @@ void run_loop(void *arg) {
 
   epoll_register(fd_epoll, shard->queue_efd, EPOLLIN);
 
+  uint64_t total_nfds = 0;
+  uint64_t total_flushes = 0;
+  uint64_t total_callbacks = 0;
+
+  uint64_t total_eventfd_events = 0;
+  uint64_t total_read_events = 0;
+  uint64_t total_write_events = 0;
+
   int nfds = 0;
   struct epoll_event events[128];
   int timeout = -1;
+  uint64_t last_cb_time = get_monotonic_usec();
   while (shard->gr_state->running) {
-    flush_pending_writes(shard);
+    uint64_t now_us = get_monotonic_usec();
+    total_flushes += flush_pending_writes(shard);
 
     nfds = epoll_wait(fd_epoll, events, 128, timeout);
     if (nfds == -1) {
       perror("epoll_wait()");
       exit(1);
     }
+
+    total_nfds += nfds;
 
     for (int i = 0; i < nfds; i++) {
       if (events[i].data.fd == fd_listener) {
@@ -507,6 +529,7 @@ void run_loop(void *arg) {
         }
         epoll_register(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
       } else if (events[i].data.fd == shard->queue_efd) {
+        total_eventfd_events++;
         uint64_t val = 0; 
         read(shard->queue_efd, &val, sizeof(val));
       } else {
@@ -517,10 +540,10 @@ void run_loop(void *arg) {
         conn->idle_start = get_monotonic_usec();
         deque_move_to_back(&shard->idle_conn_queue, conn->idle_conn_queue_node);
         if (ev.events & EPOLLIN) {
-          if ((conn->state & DISPATCH_WAITING) == 0) {
-            state_request_epoll(shard, conn);
-          }
+          total_read_events++;
+          state_request_epoll(shard, conn);
         } else if (ev.events & EPOLLOUT) {
+          total_write_events++;
           LOG_DEBUG("EPOLLOUT");
           state_response(conn);
           epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
@@ -542,7 +565,7 @@ void run_loop(void *arg) {
       }
     }
 
-    execute_callbacks(shard);
+    total_callbacks += execute_callbacks(shard);
 
     for (size_t i = 0; i < shard->gr_state->num_shards; i++) {
       Shard *s = &shard->gr_state->shards[i];
@@ -554,6 +577,15 @@ void run_loop(void *arg) {
     timeout = close_idle_connections(shard);
   }
 
+  shard->stats = (ShardStats){
+    .total_nfds = total_nfds,
+    .total_flushes = total_flushes,
+    .total_callbacks = total_callbacks,
+    .total_eventfd_events = total_eventfd_events,
+    .total_read_events = total_read_events,
+    .total_write_events = total_write_events,
+  };
+
   close(fd_listener);
 
   for (size_t i = 0; i < capacity_vector_Conn_ptr(shard->conns); i++) {
@@ -564,7 +596,7 @@ void run_loop(void *arg) {
   }
 }
 
-const size_t NUM_THREADS = 2;
+const size_t NUM_THREADS = 4;
 
 int main() {
   Shard shards[NUM_THREADS];
@@ -584,9 +616,23 @@ int main() {
     pthread_create(&threads[i], NULL, (void *(*)(void *))run_loop, (void *)s);
   }
 
+
+  ShardStats total_stats = {0};
   for (size_t i = 0; i < NUM_THREADS; i++) {
     pthread_join(threads[i], NULL);
+  
+    Shard *s = &shards[i];
+    total_stats.total_nfds += s->stats.total_nfds;
+    total_stats.total_flushes += s->stats.total_flushes;
+    total_stats.total_callbacks += s->stats.total_callbacks;
+    total_stats.total_eventfd_events += s->stats.total_eventfd_events;
+    total_stats.total_read_events += s->stats.total_read_events;
+    total_stats.total_write_events += s->stats.total_write_events;
+
+    printf("shard_id=%zu total_nfds=%zu total_flushes=%zu total_callbacks=%zu total_eventfd_events=%zu total_read_events=%zu total_write_events=%zu\n", s->shard_id, s->stats.total_nfds, s->stats.total_flushes, s->stats.total_callbacks, s->stats.total_eventfd_events, s->stats.total_read_events, s->stats.total_write_events);
   }
+
+  printf("total_nfds=%zu total_flushes=%zu total_callbacks=%zu total_eventfd_events=%zu total_read_events=%zu total_write_events=%zu\n", total_stats.total_nfds, total_stats.total_flushes, total_stats.total_callbacks, total_stats.total_eventfd_events, total_stats.total_read_events, total_stats.total_write_events);
 
   free_server_state(&gr_state);
 

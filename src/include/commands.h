@@ -84,7 +84,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
     const size_t shard_id = hash % gr_state->num_shards;                  \
     LOG_DEBUG_WITH_CTX(shard->shard_id, "dispatching %s to shard %zu", #name, shard_id); \
     cmd_vars                                                              \
-    if (shard_id == shard->shard_id) {                                    \
+    if (false) {                                    \
       struct hashmap *db = shard->dbs[conn->db];                        \
       cmd_pre_inline_exec                                                 \
       cmd_exec                                                           \

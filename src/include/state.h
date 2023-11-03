@@ -13,6 +13,15 @@
 typedef struct GRState GRState;
 
 typedef struct {
+  uint64_t total_nfds;
+  uint64_t total_flushes;
+  uint64_t total_callbacks;
+  uint64_t total_eventfd_events;
+  uint64_t total_read_events;
+  uint64_t total_write_events;
+} ShardStats;
+
+typedef struct {
   size_t shard_id;
   GRState *gr_state; // back reference to the global state
   vector_Conn_ptr *conns;
@@ -22,6 +31,8 @@ typedef struct {
   int queue_efd;
   struct mpscq *cb_queue;
   struct hashmap **dbs;
+
+  ShardStats stats;
 } Shard;
 
 struct GRState {
