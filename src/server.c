@@ -264,7 +264,7 @@ bool try_handle_request(Shard *shard, Conn *conn) {
       return false;
   }
 
-#ifdef LOG_LEVEL == DEBUG_LEVEL
+#if LOG_LEVEL == DEBUG_LEVEL
   for (size_t i = 0; i < args.argc; i++) {
     LOG_DEBUG_WITH_CTX(shard->shard_id, "Arg %zu: %.*s", i, args.lens[i], &args.buf[args.offsets[i]]);
   }
@@ -295,6 +295,7 @@ bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
   assert(conn->recv_buf_size < sizeof(conn->recv_buf));
 
   if (io) {
+  //if (io && !(conn->state & PIPELINE)) {
     ssize_t rv = 0;
     do {
       size_t cap = sizeof(conn->recv_buf) - conn->recv_buf_size;
@@ -448,9 +449,7 @@ uint64_t execute_callbacks(Shard *shard) {
     Conn *c = ctx->conn;
 
     if (c->shard_id == shard->shard_id) { // our connection, we can handle IO
-      if ((c->state & DISPATCH_WAITING) == 0) {
          state_request_cb(shard, c);
-      }      
 
       if (c->send_buf_size > c->send_buf_sent) {
         deque_push_back_and_attach(shard->pending_writes_queue, c, Conn, pending_writes_queue_node);
@@ -602,7 +601,7 @@ void run_loop(void *arg) {
   }
 }
 
-const size_t NUM_THREADS = 4;
+const size_t NUM_THREADS = 2;
 
 int main() {
   Shard shards[NUM_THREADS];

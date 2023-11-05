@@ -10,12 +10,14 @@
 
 #define MESSAGE_MAX_LENGTH 8192
 #define MAX_ARGC 64
+#define MAX_PIPELINE_REQUESTS 128
 
 enum State {
     REQUEST = 1 << 0,
     RESPONSE = 1 << 1,
     BLOCKED = 1 << 2,
     DISPATCH_WAITING = 1 << 3,
+    PIPELINE = 1 << 4,
     END = 1 << 31,
 };
 
