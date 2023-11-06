@@ -80,11 +80,13 @@ void register_command(struct hashmap* commands, const char* name, size_t arity, 
   hashmap_set(commands, cmd);
 }
 
-void fill_req_cb_ctx(CBContext *cb_ctx, Shard *src, Shard *dst, Conn *conn, dispatch_cb cb) {
+void fill_req_cb_ctx(CBContext *cb_ctx, Shard *src, Shard *dst, Conn *conn, dispatch_cb cb, size_t pipeline_idx, bool is_resp) {
   cb_ctx->src = src;
   cb_ctx->dst = dst;
   cb_ctx->conn = conn;
   cb_ctx->cb = cb;
+  cb_ctx->pipeline_idx = pipeline_idx;
+  cb_ctx->is_resp = is_resp;
 }
 
 void cmd_ping(Shard *shard, Conn *conn, const CmdArgs *args) {

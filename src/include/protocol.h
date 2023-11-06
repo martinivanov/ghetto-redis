@@ -20,6 +20,7 @@ enum State {
     BLOCKED = 1 << 2,
     DISPATCH_WAITING = 1 << 3,
     PIPELINE = 1 << 4,
+    PIPELINE_INCOMPLETE = 1 << 5,
     END = 1 << 31,
 };
 
@@ -28,7 +29,7 @@ typedef enum {
   PARSE_ERROR,
   PARSE_ERROR_INVALID_ARGC,
   PARSE_INCOMPLETE,
-  EOF_REACHED,
+  PARSE_EOF,
 } ParseError;
 
 typedef struct {

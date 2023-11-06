@@ -10,7 +10,7 @@
 typedef void (*command_func)(Shard *shard, Conn* conn, const CmdArgs* args);
 typedef void (*dispatch_cb)(Shard *shard, void *ctx);
 
-#define ALLOW_INLINE_EXEC 1
+#define ALLOW_INLINE_EXEC 0
 
 #ifndef ALLOW_INLINE_EXEC
 #define ALLOW_INLINE_EXEC 1
@@ -64,7 +64,6 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
     cmd_pre_resp                                                           \
     cmd_resp                                                              \
     cmd_post_resp                                                         \
-    conn->state &= ~DISPATCH_WAITING;                                     \
     atomic_store(&shard->notify_cb, true);                                 \
   }\
   void __cmd_##name##_req(Shard *shard, __##name##_req_t *ctx)                       \
@@ -76,7 +75,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
     cmd_pre_dispatch_exec                                                           \
     cmd_exec                                                              \
     __##name##_resp_t *resp_ctx = malloc(sizeof(__##name##_resp_t));                           \
-    fill_req_cb_ctx((CBContext *)resp_ctx, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)__cmd_##name##_resp); \
+    fill_req_cb_ctx((CBContext *)resp_ctx, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)__cmd_##name##_resp, cb_ctx->pipeline_idx, true); \
     cmd_post_dispatch_exec                                                       \
     mpscq_enqueue(cb_ctx->src->cb_queue, resp_ctx);\
     atomic_store(&cb_ctx->src->notify_cb, true);                          \
@@ -98,7 +97,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
     } else {                                                              \
       Shard *target_shard = &gr_state->shards[shard_id];                   \
       __##name##_req_t *ctx = malloc(sizeof(__##name##_req_t));                                 \
-      fill_req_cb_ctx((CBContext *)ctx, shard, target_shard, conn, (dispatch_cb)__cmd_##name##_req); \
+      fill_req_cb_ctx((CBContext *)ctx, shard, target_shard, conn, (dispatch_cb)__cmd_##name##_req, args->pipeline_idx, false); \
       cmd_pre_dispatch                                                            \
       if (mpscq_enqueue(target_shard->cb_queue, ctx)) {                   \
         conn->state |= DISPATCH_WAITING;\
@@ -120,6 +119,7 @@ typedef struct {
   Shard *src;
   Shard *dst;
   Conn *conn;
+  bool is_resp;
   size_t pipeline_idx;
   dispatch_cb cb;
 } CBContext;

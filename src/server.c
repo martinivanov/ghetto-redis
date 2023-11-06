@@ -291,6 +291,38 @@ bool try_handle_request(Shard *shard, Conn *conn) {
   return conn->recv_buf_size > 0;
 }
 
+ParseError try_parse_request(Shard *shard, Conn *conn, CmdArgs *args) {
+  if (conn->recv_buf_read >= conn->recv_buf_size) {
+    return PARSE_EOF;
+  }
+
+  uint8_t *buf = conn->recv_buf + conn->recv_buf_read;
+  ParseError err;
+  if (buf[0] == '*') {
+    err = parse_resp_request(conn, args);
+  } else {
+    err = parse_inline_request(conn, args);
+  }
+
+  LOG_DEBUG_WITH_CTX(shard->shard_id, "try_handle_request() err=%d buf='%.*s'", err, (int)conn->recv_buf_size, conn->recv_buf + conn->recv_buf_read);
+
+  switch (err) {
+    case PARSE_OK:
+      conn->recv_buf_read += args->len;
+      return PARSE_OK;
+    case PARSE_INCOMPLETE:
+      return PARSE_INCOMPLETE;
+    case PARSE_ERROR:
+      write_simple_generic_error(conn, "parse error");
+      conn->state = END;
+      return PARSE_ERROR;
+    case PARSE_ERROR_INVALID_ARGC:
+      write_simple_generic_error(conn, "invalid argc");
+      conn->state = END;
+      return PARSE_ERROR_INVALID_ARGC;
+  }
+}
+
 bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
   assert(conn->recv_buf_size < sizeof(conn->recv_buf));
 
@@ -298,14 +330,27 @@ bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
   //if (io && !(conn->state & PIPELINE)) {
     ssize_t rv = 0;
     do {
-      size_t cap = sizeof(conn->recv_buf) - conn->recv_buf_size;
-      if (conn->recv_buf_read > 0) {
-        LOG_DEBUG_WITH_CTX(shard->shard_id, "compacting buffer by moving %zu byte from offset %zu to 0", conn->recv_buf_size, conn->recv_buf_read);
-        memmove(conn->recv_buf, &conn->recv_buf[conn->recv_buf_read], conn->recv_buf_size);
-        conn->recv_buf_read = 0;
+      if (conn->state & DISPATCH_WAITING) {
+        // We are already processing a pipeline of requests. We shouldn't touch the recv buffer until the requests finish.
+        LOG_DEBUG_WITH_CTX(shard->shard_id, "Already processing a pipeline\n");
+        return false;
       }
+
+      if (conn->state & PIPELINE_INCOMPLETE) {
+        // We have a partial pipeline in the recv buffer. We should try to fill the buffer until we have a complete pipeline.
+        LOG_DEBUG_WITH_CTX(shard->shard_id, "Filling incomplete recv buffer\n");
+        conn->state &= ~PIPELINE_INCOMPLETE;
+      } else {
+        // We are not processing a pipeline of requests so we need to empty the recv buffer before we can fill it again.
+        LOG_DEBUG_WITH_CTX(shard->shard_id, "Filling empty recv buffer\n");
+        conn->recv_buf_read = 0;
+        conn->recv_buf_size = 0;
+      }
+
+      size_t cap = sizeof(conn->recv_buf) - conn->recv_buf_size;
       rv = read(conn->fd, &conn->recv_buf[conn->recv_buf_size], cap);
-      LOG_DEBUG_WITH_CTX(shard->shard_id, "read %zu bytes(up to %zu) errno=%d", rv, cap, errno);
+      LOG_DEBUG_WITH_CTX(shard->shard_id, "try_fill_buffer() rv=%zu cap=%zu\n", rv, cap);
+      //LOG_DEBUG_WITH_CTX(shard->shard_id, "read %zu bytes(up to %zu) errno=%d", rv, cap, errno);
     } while (rv < 0 && errno == EINTR);
 
     if (rv < 0 && errno == EAGAIN) {
@@ -334,14 +379,51 @@ bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
     assert(conn->recv_buf_size <= sizeof(conn->recv_buf));
   }
 
-  if (conn->state & DISPATCH_WAITING) {
-    return false;
-  }  
+  // if (conn->state & DISPATCH_WAITING) {
+  //   return false;
+  // }  
 
-  while (try_handle_request(shard, conn)) {
+  CmdArgs args;
+  ParseError err;
+  while ((err = try_parse_request(shard, conn, &args)) == PARSE_OK) {
+    CmdArgs *a = (CmdArgs *)malloc(sizeof(CmdArgs));
+    memcpy(a, &args, sizeof(CmdArgs));
+    LOG_DEBUG_WITH_CTX(shard->shard_id, "conn->pipeline_req_count=%zu\n", conn->pipeline_req_count);
+    a->pipeline_idx = conn->pipeline_req_count;
+    conn->pipeline_reqs[a->pipeline_idx] = a;
+    conn->pipeline_req_count++;
   }
 
-  return conn->state & (END | DISPATCH_WAITING);
+  if (err == PARSE_INCOMPLETE) {
+    conn->state |= PIPELINE_INCOMPLETE;
+    return true;
+  }
+
+  LOG_DEBUG_WITH_CTX(shard->shard_id, "Got %zu requests\n", conn->pipeline_req_count);
+
+  if (conn->pipeline_req_count == 1) {
+    CmdArgs *args = conn->pipeline_reqs[0];
+    handle_command(shard, conn, args);
+    
+    if (!(conn->state & DISPATCH_WAITING)) {
+      free(args);
+      conn->pipeline_reqs[0] = NULL;
+      conn->pipeline_req_count = 0;
+    }
+
+    return false;
+  }
+
+  for (size_t i = 0; i < conn->pipeline_req_count; i++) {
+    CmdArgs *args = conn->pipeline_reqs[i];
+    handle_command(shard, conn, args);
+    // TODO: handle inline pipelined commands as well
+  }
+
+  conn->state |= PIPELINE;
+
+  return false;
+  //return conn->state & (END | DISPATCH_WAITING);
 }
 
 void state_request_cb(Shard *shard, Conn *conn) {
@@ -444,20 +526,35 @@ uint64_t execute_callbacks(Shard *shard) {
   uint64_t count = 0;
   while (ctx != NULL) {
     count++;
-    void *arg = ctx;
-    ctx->cb(shard, arg);
+
     Conn *c = ctx->conn;
+    if (ctx->is_resp && c->shard_id == shard->shard_id) { // our connection, we can handle IO
+      c->pipeline_resps[ctx->pipeline_idx] = ctx;
+      c->pipeline_resp_count++;
+      if (c->pipeline_resp_count == c->pipeline_req_count) {
+        for (size_t i = 0; i < c->pipeline_resp_count; i++) {
+          CBContext *resp_ctx = c->pipeline_resps[i];
+          resp_ctx->cb(shard, resp_ctx);
+          free(resp_ctx);
+          c->pipeline_resps[i] = NULL;
+          CmdArgs *req = c->pipeline_reqs[i];
+          free(req);
+          c->pipeline_reqs[i] = NULL;
+        }
+        c->pipeline_resp_count = 0;
+        c->pipeline_req_count = 0;
+        c->state &= ~DISPATCH_WAITING;
 
-    if (c->shard_id == shard->shard_id) { // our connection, we can handle IO
-         state_request_cb(shard, c);
-
-      if (c->send_buf_size > c->send_buf_sent) {
-        deque_push_back_and_attach(shard->pending_writes_queue, c, Conn, pending_writes_queue_node);
-        notify = true;
+        if (c->send_buf_size > c->send_buf_sent) {
+          deque_push_back_and_attach(shard->pending_writes_queue, c, Conn, pending_writes_queue_node);
+          notify = true;
+        }
       }
+    } else {
+      void *arg = ctx;
+      ctx->cb(shard, arg);
+      free(ctx);
     }
-
-    free(ctx);
 
     ctx = mpscq_dequeue(shard->cb_queue);
   }
@@ -601,7 +698,7 @@ void run_loop(void *arg) {
   }
 }
 
-const size_t NUM_THREADS = 2;
+const size_t NUM_THREADS = 4;
 
 int main() {
   Shard shards[NUM_THREADS];
