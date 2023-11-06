@@ -120,6 +120,7 @@ typedef struct {
   Shard *src;
   Shard *dst;
   Conn *conn;
+  size_t pipeline_idx;
   dispatch_cb cb;
 } CBContext;
 

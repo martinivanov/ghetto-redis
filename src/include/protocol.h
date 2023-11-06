@@ -12,6 +12,8 @@
 #define MAX_ARGC 64
 #define MAX_PIPELINE_REQUESTS 128
 
+struct CBContext;
+
 enum State {
     REQUEST = 1 << 0,
     RESPONSE = 1 << 1,
@@ -26,10 +28,12 @@ typedef enum {
   PARSE_ERROR,
   PARSE_ERROR_INVALID_ARGC,
   PARSE_INCOMPLETE,
+  EOF_REACHED,
 } ParseError;
 
 typedef struct {
   uint8_t *buf;
+  size_t pipeline_idx;
   size_t argc;
   size_t len;
   size_t offsets[MAX_ARGC];
@@ -59,6 +63,12 @@ typedef struct {
 
     DequeNode *pending_writes_queue_node;
     DequeNode *idle_conn_queue_node;
+
+    size_t pipeline_req_count;
+    CmdArgs *pipeline_reqs[MAX_PIPELINE_REQUESTS];
+    
+    size_t pipeline_resp_count;
+    struct CBContext *pipeline_resps[MAX_PIPELINE_REQUESTS];
 } Conn;
 
 void write_simple_error(Conn *conn, const char *prefix, const char *msg);
