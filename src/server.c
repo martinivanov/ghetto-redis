@@ -414,6 +414,8 @@ bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
     return false;
   }
 
+  conn->state |= PIPELINE;
+
   for (size_t i = 0; i < conn->pipeline_req_count; i++) {
     CmdArgs *args = conn->pipeline_reqs[i];
     handle_command(shard, conn, args);
@@ -698,7 +700,7 @@ void run_loop(void *arg) {
   }
 }
 
-const size_t NUM_THREADS = 4;
+const size_t NUM_THREADS = 8;
 
 int main() {
   Shard shards[NUM_THREADS];

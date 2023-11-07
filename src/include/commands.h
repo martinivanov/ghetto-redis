@@ -10,7 +10,7 @@
 typedef void (*command_func)(Shard *shard, Conn* conn, const CmdArgs* args);
 typedef void (*dispatch_cb)(Shard *shard, void *ctx);
 
-#define ALLOW_INLINE_EXEC 0
+#define ALLOW_INLINE_EXEC 1
 
 #ifndef ALLOW_INLINE_EXEC
 #define ALLOW_INLINE_EXEC 1
@@ -33,6 +33,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
 #define CMD_PRE_DISPATCH(block) block
 #define CMD_PRE_DISPATCH_EXEC(block) block
 #define CMD_POST_DISPATCH_EXEC(block) block
+#define CMD_POST_SYNC_PIPELINE_EXEC(block) block
 #define CMD_PRE_RESP(block) block
 #define CMD_POST_RESP(block) block
 
@@ -48,65 +49,83 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
   CBContext ctx; \
   fields
 
-#define DEFINE_COMMAND(name, req_t, resp_t, cmd_vars, cmd_pre_inline_exec, cmd_exec, cmd_resp, cmd_pre_dispatch, cmd_pre_dispatch_exec, cmd_post_dispatch_exec, cmd_pre_resp, cmd_post_resp) \
-  typedef struct {                                                        \
-    req_t                                                                 \
-  } __##name##_req_t;                                                     \
-\
-  typedef struct {                                                            \
-    resp_t                                                                \
-  } __##name##_resp_t;                                                    \
-  \
-  void __cmd_##name##_resp(Shard *shard, __##name##_resp_t *ctx)                    \
-  {                                                                       \
-    CBContext *cb_ctx = (CBContext *)ctx;                                \
-    Conn *conn = cb_ctx->conn;                                            \
-    cmd_pre_resp                                                           \
-    cmd_resp                                                              \
-    cmd_post_resp                                                         \
-    atomic_store(&shard->notify_cb, true);                                 \
-  }\
-  void __cmd_##name##_req(Shard *shard, __##name##_req_t *ctx)                       \
-  {                                                                       \
-    CBContext *cb_ctx = (CBContext *)ctx;                                 \
-    Conn *conn = (Conn *)cb_ctx->conn;                                    \
-    struct hashmap *db = shard->dbs[conn->db];                        \
-    UNPACK_KEYED_CTX                                                      \
-    cmd_pre_dispatch_exec                                                           \
-    cmd_exec                                                              \
-    __##name##_resp_t *resp_ctx = malloc(sizeof(__##name##_resp_t));                           \
-    fill_req_cb_ctx((CBContext *)resp_ctx, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)__cmd_##name##_resp, cb_ctx->pipeline_idx, true); \
-    cmd_post_dispatch_exec                                                       \
-    mpscq_enqueue(cb_ctx->src->cb_queue, resp_ctx);\
-    atomic_store(&cb_ctx->src->notify_cb, true);                          \
-  }                                                                       \
-  void cmd_##name(Shard *shard, Conn *conn, const CmdArgs *args)          \
-  {                                                                       \
-    const GRState *gr_state = shard->gr_state;                            \
-    const uint8_t *key_buf_ptr = args->buf + args->offsets[1];                    \
-    const size_t keylen = args->lens[1];                                  \
-    const uint64_t hash = hashmap_xxhash3(key_buf_ptr, keylen, 0, 0);             \
-    const size_t shard_id = hash % gr_state->num_shards;                  \
-    LOG_DEBUG_WITH_CTX(shard->shard_id, "dispatching %s to shard %zu", #name, shard_id); \
-    cmd_vars                                                              \
-    if (ALLOW_INLINE_EXEC && shard_id == shard->shard_id) {                                    \
-      struct hashmap *db = shard->dbs[conn->db];                        \
-      cmd_pre_inline_exec                                                 \
-      cmd_exec                                                           \
-      cmd_resp                                                           \
-    } else {                                                              \
-      Shard *target_shard = &gr_state->shards[shard_id];                   \
-      __##name##_req_t *ctx = malloc(sizeof(__##name##_req_t));                                 \
-      fill_req_cb_ctx((CBContext *)ctx, shard, target_shard, conn, (dispatch_cb)__cmd_##name##_req, args->pipeline_idx, false); \
-      cmd_pre_dispatch                                                            \
-      if (mpscq_enqueue(target_shard->cb_queue, ctx)) {                   \
-        conn->state |= DISPATCH_WAITING;\
-        atomic_store(&target_shard->notify_cb, true);                       \
-      } else {\
-        write_simple_generic_error(conn, "shard dispatch queue full");\
-      }\
-    }                                                                     \
-  }                                                                       \
+#define DEFINE_COMMAND(name, req_t, resp_t, cmd_vars, cmd_pre_inline_exec, cmd_exec, cmd_resp, cmd_pre_dispatch, cmd_pre_dispatch_exec, cmd_post_dispatch_exec, cmd_post_sync_pipeline_exec, cmd_pre_resp, cmd_post_resp) \
+  typedef struct                                                                                                                                                                             \
+  {                                                                                                                                                                                          \
+    req_t                                                                                                                                                                                    \
+  } __##name##_req_t;                                                                                                                                                                        \
+                                                                                                                                                                                             \
+  typedef struct                                                                                                                                                                             \
+  {                                                                                                                                                                                          \
+    resp_t                                                                                                                                                                                   \
+  } __##name##_resp_t;                                                                                                                                                                       \
+                                                                                                                                                                                             \
+  void __cmd_##name##_resp(Shard *shard, __##name##_resp_t *ctx)                                                                                                                             \
+  {                                                                                                                                                                                          \
+    CBContext *cb_ctx = (CBContext *)ctx;                                                                                                                                                    \
+    Conn *conn = cb_ctx->conn;                                                                                                                                                               \
+    cmd_pre_resp                                                                                                                                                                             \
+    cmd_resp                                                                                                                                                                                 \
+    cmd_post_resp                                                                                                                                                                            \
+    atomic_store(&shard->notify_cb, true);                                                                                                                                                   \
+  }                                                                                                                                                                                          \
+  void __cmd_##name##_req(Shard *shard, __##name##_req_t *ctx)                                                                                                                               \
+  {                                                                                                                                                                                          \
+    CBContext *cb_ctx = (CBContext *)ctx;                                                                                                                                                    \
+    Conn *conn = (Conn *)cb_ctx->conn;                                                                                                                                                       \
+    struct hashmap *db = shard->dbs[conn->db];                                                                                                                                               \
+    UNPACK_KEYED_CTX                                                                                                                                                                         \
+    cmd_pre_dispatch_exec                                                                                                                                                                    \
+    cmd_exec                                                                                                                                                                                 \
+    __##name##_resp_t *resp_ctx = malloc(sizeof(__##name##_resp_t));                                                                                                                         \
+    fill_req_cb_ctx((CBContext *)resp_ctx, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)__cmd_##name##_resp, cb_ctx->pipeline_idx, true);                                            \
+    cmd_post_dispatch_exec                                                                                                                                                                   \
+    mpscq_enqueue(cb_ctx->src->cb_queue, resp_ctx);                                                                                                                                          \
+    atomic_store(&cb_ctx->src->notify_cb, true);                                                                                                                                             \
+  }                                                                                                                                                                                          \
+  void cmd_##name(Shard *shard, Conn *conn, const CmdArgs *args)                                                                                                                             \
+  {                                                                                                                                                                                          \
+    const GRState *gr_state = shard->gr_state;                                                                                                                                               \
+    const uint8_t *key_buf_ptr = args->buf + args->offsets[1];                                                                                                                               \
+    const size_t keylen = args->lens[1];                                                                                                                                                     \
+    const uint64_t hash = hashmap_xxhash3(key_buf_ptr, keylen, 0, 0);                                                                                                                        \
+    const size_t shard_id = hash % gr_state->num_shards;                                                                                                                                     \
+    LOG_DEBUG_WITH_CTX(shard->shard_id, "dispatching %s to shard %zu", #name, shard_id);                                                                                                     \
+    cmd_vars if (ALLOW_INLINE_EXEC && shard_id == shard->shard_id && !(conn->state & PIPELINE))                                                                                              \
+    {                                                                                                                                                                                        \
+      struct hashmap *db = shard->dbs[conn->db];                                                                                                                                             \
+      cmd_pre_inline_exec                                                                                                                                                                    \
+      cmd_exec                                                                                                                                                                               \
+      cmd_resp                                                                                                                                                                               \
+    }                                                                                                                                                                                        \
+    else if (ALLOW_INLINE_EXEC && shard_id == shard->shard_id && (conn->state & PIPELINE))                                                                                                   \
+    {                                                                                                                                                                                        \
+      struct hashmap *db = shard->dbs[conn->db];                                                                                                                                             \
+      cmd_pre_inline_exec                                                                                                                                                                    \
+      cmd_exec                                                                                                                                                                               \
+      __##name##_resp_t *resp_ctx = malloc(sizeof(__##name##_resp_t));                                                                                                                       \
+      fill_req_cb_ctx((CBContext *)resp_ctx, shard, shard, conn, (dispatch_cb)__cmd_##name##_resp, args->pipeline_idx, true);                                                                \
+      cmd_post_sync_pipeline_exec                                                                                                                                                                 \
+      conn->pipeline_resps[args->pipeline_idx] = (CBContext *)resp_ctx;                                                                                                                      \
+      conn->pipeline_resp_count++;                                                                                                                                                           \
+    }                                                                                                                                                                                        \
+    else                                                                                                                                                                                     \
+    {                                                                                                                                                                                        \
+      Shard *target_shard = &gr_state->shards[shard_id];                                                                                                                                     \
+      __##name##_req_t *ctx = malloc(sizeof(__##name##_req_t));                                                                                                                              \
+      fill_req_cb_ctx((CBContext *)ctx, shard, target_shard, conn, (dispatch_cb)__cmd_##name##_req, args->pipeline_idx, false);                                                              \
+      cmd_pre_dispatch                                                                                                                                                                       \
+      if (mpscq_enqueue(target_shard->cb_queue, ctx))                                                                                                                                        \
+      {                                                                                                                                                                                      \
+        conn->state |= DISPATCH_WAITING;                                                                                                                                                     \
+        atomic_store(&target_shard->notify_cb, true);                                                                                                                                        \
+      }                                                                                                                                                                                      \
+      else                                                                                                                                                                                   \
+      {                                                                                                                                                                                      \
+        write_simple_generic_error(conn, "shard dispatch queue full");                                                                                                                       \
+      }                                                                                                                                                                                      \
+    }                                                                                                                                                                                        \
+  }
 
 typedef struct {
     size_t name_len;

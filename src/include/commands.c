@@ -130,16 +130,15 @@ DEFINE_COMMAND(
     }
   ),
   CMD_PRE_DISPATCH(
-    ctx->ctx.key = malloc(keylen);
-    memcpy(ctx->ctx.key, key, keylen);
+    ctx->ctx.key = key;
     ctx->ctx.keylen = keylen;
     ctx->ctx.hash = hash; 
   ),
   CMD_PRE_DISPATCH_EXEC(),
   CMD_POST_DISPATCH_EXEC(
-    free(keyed_ctx->key);
     resp_ctx->entry = entry;
   ),
+  CMD_POST_SYNC_PIPELINE_EXEC(),
   CMD_PRE_RESP(
    Entry *entry = ctx->entry; 
   ),
@@ -184,6 +183,7 @@ DEFINE_COMMAND(
     uint8_t *val = ctx->val;
   ),
   CMD_POST_DISPATCH_EXEC(),
+  CMD_POST_SYNC_PIPELINE_EXEC(),
   CMD_PRE_RESP(),
   CMD_POST_RESP()
 )
@@ -210,16 +210,16 @@ DEFINE_COMMAND(
     write_integer(conn, res);
   ),
   CMD_PRE_DISPATCH(
-    ctx->ctx.key = malloc(keylen);
-    memcpy(ctx->ctx.key, key, keylen);
+    ctx->ctx.key = key;
     ctx->ctx.keylen = keylen;
     ctx->ctx.hash = hash;
   ),
   CMD_PRE_DISPATCH_EXEC(),
   CMD_POST_DISPATCH_EXEC(
-    free(keyed_ctx->key);
+    // free(keyed_ctx->key);
     resp_ctx->res = res;
   ),
+  CMD_POST_SYNC_PIPELINE_EXEC(),
   CMD_PRE_RESP(
     uint64_t res = ctx->res;
   ),
@@ -451,25 +451,35 @@ void cmd_mset(Shard *shard, Conn *conn, const CmdArgs *args) {
 DEFINE_COMMAND(
   dispatch_ping,
   KEYED_REQ_CTX(),
-  RESP_CTX(),
+  RESP_CTX(
+    size_t sid;
+  ),
   CMD_VARS(
     uint8_t *key = key_buf_ptr;
+    size_t sid = shard->shard_id;
   ),
   CMD_PRE_INLINE_EXEC(),
   CMD_EXEC(),
   CMD_RESP(
-    write_integer(conn, 1);
+    write_integer(conn, sid);
   ),
   CMD_PRE_DISPATCH(
-    ctx->ctx.key = malloc(keylen);
-    memcpy(ctx->ctx.key, key, keylen);
+    ctx->ctx.key = key;
     ctx->ctx.keylen = keylen;
     ctx->ctx.hash = hash; 
   ),
   CMD_PRE_DISPATCH_EXEC(),
-  CMD_POST_DISPATCH_EXEC(
-    free(keyed_ctx->key);
+  CMD_POST_DISPATCH_EXEC(),
+  CMD_POST_SYNC_PIPELINE_EXEC(
+    resp_ctx->sid = shard_id;
   ),
-  CMD_PRE_RESP(),
+  CMD_PRE_RESP(
+    size_t sid = cb_ctx->src->shard_id;
+  ),
   CMD_POST_RESP()
 )
+
+
+
+
+
