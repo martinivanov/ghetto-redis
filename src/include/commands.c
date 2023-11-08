@@ -138,7 +138,6 @@ DEFINE_COMMAND(
   CMD_POST_DISPATCH_EXEC(
     resp_ctx->entry = entry;
   ),
-  CMD_POST_SYNC_PIPELINE_EXEC(),
   CMD_PRE_RESP(
    Entry *entry = ctx->entry; 
   ),
@@ -183,7 +182,6 @@ DEFINE_COMMAND(
     uint8_t *val = ctx->val;
   ),
   CMD_POST_DISPATCH_EXEC(),
-  CMD_POST_SYNC_PIPELINE_EXEC(),
   CMD_PRE_RESP(),
   CMD_POST_RESP()
 )
@@ -216,10 +214,8 @@ DEFINE_COMMAND(
   ),
   CMD_PRE_DISPATCH_EXEC(),
   CMD_POST_DISPATCH_EXEC(
-    // free(keyed_ctx->key);
     resp_ctx->res = res;
   ),
-  CMD_POST_SYNC_PIPELINE_EXEC(),
   CMD_PRE_RESP(
     uint64_t res = ctx->res;
   ),
@@ -468,18 +464,14 @@ DEFINE_COMMAND(
     ctx->ctx.keylen = keylen;
     ctx->ctx.hash = hash; 
   ),
-  CMD_PRE_DISPATCH_EXEC(),
-  CMD_POST_DISPATCH_EXEC(),
-  CMD_POST_SYNC_PIPELINE_EXEC(
-    resp_ctx->sid = shard_id;
+  CMD_PRE_DISPATCH_EXEC(
+    size_t sid = cb_ctx->dst;
+  ),
+  CMD_POST_DISPATCH_EXEC(
+    resp_ctx->sid = sid;
   ),
   CMD_PRE_RESP(
     size_t sid = cb_ctx->src->shard_id;
   ),
   CMD_POST_RESP()
 )
-
-
-
-
-

@@ -171,7 +171,7 @@ bool try_flush_buffer(Conn *conn) {
   } while (rv < 0 && errno == EINTR);
 
   if (rv < 0 && errno == EAGAIN) {
-    conn->state |= BLOCKED;
+    conn->state |= WRITE_BLOCKED;
     return false;
   }
 
@@ -349,11 +349,13 @@ bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
 
       size_t cap = sizeof(conn->recv_buf) - conn->recv_buf_size;
       rv = read(conn->fd, &conn->recv_buf[conn->recv_buf_size], cap);
+      // printf("rv=%zu cap=%zu\n", errno, cap);
       LOG_DEBUG_WITH_CTX(shard->shard_id, "try_fill_buffer() rv=%zu cap=%zu\n", rv, cap);
       //LOG_DEBUG_WITH_CTX(shard->shard_id, "read %zu bytes(up to %zu) errno=%d", rv, cap, errno);
     } while (rv < 0 && errno == EINTR);
 
     if (rv < 0 && errno == EAGAIN) {
+      conn->state |= READ_BLOCKED;
       // got EAGAIN, stop.
       return false;
     }
@@ -379,6 +381,10 @@ bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
     assert(conn->recv_buf_size <= sizeof(conn->recv_buf));
   }
 
+  if (!errno) {
+    conn->state &= ~READ_BLOCKED;
+  }
+
   // if (conn->state & DISPATCH_WAITING) {
   //   return false;
   // }  
@@ -393,6 +399,18 @@ bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
     conn->pipeline_reqs[a->pipeline_idx] = a;
     conn->pipeline_req_count++;
   }
+
+  // if (err == PARSE_EOF) {
+  //   if (conn->pipeline_req_count == 1) {
+  //     printf("reached eof without any requests (are we blocked? - %b)\n", conn->state & READ_BLOCKED);
+  //     return conn->state & READ_BLOCKED;
+  //   } else if (conn->pipeline_req_count == 1 && !(conn->state & READ_BLOCKED)) {
+  //     printf("reached eof with one request and we have more data do read\n");
+  //     return true;
+  //   }
+  // }
+
+  // printf("err=%d pipeline_req_count=%d\n", err, conn->pipeline_req_count);
 
   if (err == PARSE_INCOMPLETE) {
     conn->state |= PIPELINE_INCOMPLETE;
@@ -419,10 +437,25 @@ bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
   for (size_t i = 0; i < conn->pipeline_req_count; i++) {
     CmdArgs *args = conn->pipeline_reqs[i];
     handle_command(shard, conn, args);
-    // TODO: handle inline pipelined commands as well
   }
 
-  conn->state |= PIPELINE;
+  if (!(conn->state & DISPATCH_WAITING)) {
+    // We executed all commands in the pipeline without dispatching any of them. We can execute the response callbacks right away.
+    for (size_t i = 0; i < conn->pipeline_req_count; i++) {
+      free(conn->pipeline_reqs[i]);
+      conn->pipeline_reqs[i] = NULL;
+
+      CBContext *ctx = conn->pipeline_resps[i];
+      ctx->cb(shard, ctx);
+      free(ctx);
+      conn->pipeline_resps[i] = NULL;
+    }
+
+    conn->pipeline_req_count = 0;
+    conn->pipeline_resp_count = 0;
+
+    return false;
+  }
 
   return false;
   //return conn->state & (END | DISPATCH_WAITING);
@@ -561,9 +594,9 @@ uint64_t execute_callbacks(Shard *shard) {
     ctx = mpscq_dequeue(shard->cb_queue);
   }
 
-  if (notify) {
-    write(shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
-  }
+  // if (notify) {
+  //   atomic_store(&shard->notify_cb, true);
+  // }
 
   return count;
 }
@@ -661,8 +694,8 @@ void run_loop(void *arg) {
             deque_push_back_and_attach(shard->pending_writes_queue, conn, Conn, pending_writes_queue_node);
           }
 
-          if (conn->state & BLOCKED) {
-            conn->state &= ~BLOCKED;
+          if (conn->state & WRITE_BLOCKED) {
+            conn->state &= ~WRITE_BLOCKED;
             epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
           }
         }
@@ -673,7 +706,8 @@ void run_loop(void *arg) {
 
     for (size_t i = 0; i < shard->gr_state->num_shards; i++) {
       Shard *s = &shard->gr_state->shards[i];
-      if (atomic_exchange(&s->notify_cb, false)) {
+      //if (atomic_exchange(&s->notify_cb, false)) {
+      if (s->cb_queue->count > 0) {
         write(s->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
       }
     }
@@ -700,7 +734,7 @@ void run_loop(void *arg) {
   }
 }
 
-const size_t NUM_THREADS = 8;
+const size_t NUM_THREADS = 4;
 
 int main() {
   Shard shards[NUM_THREADS];

@@ -17,10 +17,11 @@ struct CBContext;
 enum State {
     REQUEST = 1 << 0,
     RESPONSE = 1 << 1,
-    BLOCKED = 1 << 2,
-    DISPATCH_WAITING = 1 << 3,
-    PIPELINE = 1 << 4,
-    PIPELINE_INCOMPLETE = 1 << 5,
+    READ_BLOCKED = 1 << 2,
+    WRITE_BLOCKED = 1 << 3,
+    DISPATCH_WAITING = 1 << 4,
+    PIPELINE = 1 << 5,
+    PIPELINE_INCOMPLETE = 1 << 6,
     END = 1 << 31,
 };
 

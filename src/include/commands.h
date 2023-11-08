@@ -49,7 +49,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
   CBContext ctx; \
   fields
 
-#define DEFINE_COMMAND(name, req_t, resp_t, cmd_vars, cmd_pre_inline_exec, cmd_exec, cmd_resp, cmd_pre_dispatch, cmd_pre_dispatch_exec, cmd_post_dispatch_exec, cmd_post_sync_pipeline_exec, cmd_pre_resp, cmd_post_resp) \
+#define DEFINE_COMMAND(name, req_t, resp_t, cmd_vars, cmd_pre_inline_exec, cmd_exec, cmd_resp, cmd_pre_dispatch, cmd_pre_dispatch_exec, cmd_post_dispatch_exec, cmd_pre_resp, cmd_post_resp) \
   typedef struct                                                                                                                                                                             \
   {                                                                                                                                                                                          \
     req_t                                                                                                                                                                                    \
@@ -59,7 +59,14 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
   {                                                                                                                                                                                          \
     resp_t                                                                                                                                                                                   \
   } __##name##_resp_t;                                                                                                                                                                       \
-                                                                                                                                                                                             \
+  void __cmd_##name##_sync_pipeline_resp(Shard *shard, __##name##_resp_t *ctx)                                                                                                               \
+  {                                                                                                                                                                                          \
+    CBContext *cb_ctx = (CBContext *)ctx;                                                                                                                                                    \
+    Conn *conn = cb_ctx->conn;                                                                                                                                                               \
+    cmd_pre_resp                                                                                                                                                                             \
+    cmd_resp                                                                                                                                                                                 \
+    cmd_post_resp                                                                                                                                                                            \
+  }                                                                                                                                                                                          \
   void __cmd_##name##_resp(Shard *shard, __##name##_resp_t *ctx)                                                                                                                             \
   {                                                                                                                                                                                          \
     CBContext *cb_ctx = (CBContext *)ctx;                                                                                                                                                    \
@@ -67,7 +74,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
     cmd_pre_resp                                                                                                                                                                             \
     cmd_resp                                                                                                                                                                                 \
     cmd_post_resp                                                                                                                                                                            \
-    atomic_store(&shard->notify_cb, true);                                                                                                                                                   \
+    /*atomic_store(&shard->notify_cb, true);*/                                                                                                                                                  \
   }                                                                                                                                                                                          \
   void __cmd_##name##_req(Shard *shard, __##name##_req_t *ctx)                                                                                                                               \
   {                                                                                                                                                                                          \
@@ -104,8 +111,8 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
       cmd_pre_inline_exec                                                                                                                                                                    \
       cmd_exec                                                                                                                                                                               \
       __##name##_resp_t *resp_ctx = malloc(sizeof(__##name##_resp_t));                                                                                                                       \
-      fill_req_cb_ctx((CBContext *)resp_ctx, shard, shard, conn, (dispatch_cb)__cmd_##name##_resp, args->pipeline_idx, true);                                                                \
-      cmd_post_sync_pipeline_exec                                                                                                                                                                 \
+      fill_req_cb_ctx((CBContext *)resp_ctx, shard, shard, conn, (dispatch_cb)__cmd_##name##_sync_pipeline_resp, args->pipeline_idx, true);                                                                \
+      cmd_post_dispatch_exec                                                                                                                                                                 \
       conn->pipeline_resps[args->pipeline_idx] = (CBContext *)resp_ctx;                                                                                                                      \
       conn->pipeline_resp_count++;                                                                                                                                                           \
     }                                                                                                                                                                                        \
