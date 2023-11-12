@@ -17,7 +17,9 @@ typedef struct {
 void deque_init(Deque *deque);
 bool deque_is_empty(Deque *deque);
 void deque_push_front(Deque *deque, void *data);
+void deque_push_back_node(Deque *deque, DequeNode *node);
 void deque_push_back(Deque *deque, void *data);
+DequeNode *deque_pop_front_node(Deque *deque);
 void* deque_pop_front(Deque *deque);
 void* deque_pop_back(Deque *deque);
 void deque_detach(Deque *deque, DequeNode *node);

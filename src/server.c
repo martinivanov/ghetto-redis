@@ -27,7 +27,9 @@
 #include "include/deque.h"
 #include "include/state.h"
 #include "include/commands.h"
+#include "include/protocol.h"
 #include "include/kv.h"
+#include "include/mempool.h"
 
 #define unlikely(expr) __builtin_expect(!!(expr), 0)
 #define likely(expr) __builtin_expect(!!(expr), 1)
@@ -66,6 +68,8 @@ void init_shards(GRState *gr_state) {
     for (size_t j = 0; j < gr_state->num_dbs; j++) {
       shard->dbs[j] = hashmap_new(sizeof(Entry), 1 << 20, seed, seed, entry_hash_xxhash3, entry_compare, entry_free, NULL);
     }
+
+    shard->arg_pool = mem_pool_create(1 << 16, sizeof(CmdArgs));    
 
     shard->gr_state = gr_state;
 
@@ -232,65 +236,6 @@ void handle_command(Shard *shard, Conn *conn, CmdArgs *args) {
   cmd->func(shard, conn, args);
 }
 
-bool try_handle_request(Shard *shard, Conn *conn) {
-  if (unlikely(conn->recv_buf_size < 1)) {
-    return false;
-  }
-
-  uint8_t *buf = conn->recv_buf + conn->recv_buf_read;
-  CmdArgs args;
-  ParseError err;
-  if (likely(buf[0] == '*')) {
-    err = parse_resp_request(conn, &args);
-  } else {
-    err = parse_inline_request(conn, &args);
-  }
-  assert(conn->send_buf_sent <= conn->send_buf_size);
-
-  LOG_DEBUG_WITH_CTX(shard->shard_id, "try_handle_request() err=%d buf='%.*s'", err, (int)conn->recv_buf_size, conn->recv_buf + conn->recv_buf_read);
-
-  switch (err) {
-    case PARSE_OK:
-      break;
-    case PARSE_INCOMPLETE:
-      return false;
-    case PARSE_ERROR:
-      write_simple_generic_error(conn, "parse error");
-      conn->state = END;
-      return false;
-    case PARSE_ERROR_INVALID_ARGC:
-      write_simple_generic_error(conn, "invalid argc");
-      conn->state = END;
-      return false;
-  }
-
-#if LOG_LEVEL == DEBUG_LEVEL
-  for (size_t i = 0; i < args.argc; i++) {
-    LOG_DEBUG_WITH_CTX(shard->shard_id, "Arg %zu: %.*s", i, args.lens[i], &args.buf[args.offsets[i]]);
-  }
-#endif
-
-  if (likely(args.argc > 0)) {
-    handle_command(shard, conn, &args);
-  }
-
-  if (unlikely(conn->state == END)) {
-    return false;
-  }
-
-  if (unlikely(conn->recv_buf_size < (args.len))) {
-    return false;
-  }
-
-  conn->recv_buf_read += args.len;
-  size_t remaining = conn->recv_buf_size - args.len;
-  LOG_DEBUG_WITH_CTX(shard->shard_id, "[after command] conn->recv_buf_read=%zu conn->recv_buf_size=%zu remaining=%zu", conn->recv_buf_read, conn->recv_buf_size, remaining);
-
-  conn->recv_buf_size = remaining;
-
-  return conn->recv_buf_size > 0;
-}
-
 ParseError try_parse_request(Shard *shard, Conn *conn, CmdArgs *args) {
   if (conn->recv_buf_read >= conn->recv_buf_size) {
     return PARSE_EOF;
@@ -389,14 +334,19 @@ bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
   //   return false;
   // }  
 
-  CmdArgs args;
   ParseError err;
-  while ((err = try_parse_request(shard, conn, &args)) == PARSE_OK) {
-    CmdArgs *a = (CmdArgs *)malloc(sizeof(CmdArgs));
-    memcpy(a, &args, sizeof(CmdArgs));
+  while (true) {
+    CmdArgs *args = mem_pool_rent(shard->arg_pool);
+    memset(args, 0, sizeof(*args));
+    err = try_parse_request(shard, conn, args);
+    if (err != PARSE_OK) {
+      mem_pool_return(shard->arg_pool, args);
+      break;
+    }
+
     LOG_DEBUG_WITH_CTX(shard->shard_id, "conn->pipeline_req_count=%zu\n", conn->pipeline_req_count);
-    a->pipeline_idx = conn->pipeline_req_count;
-    conn->pipeline_reqs[a->pipeline_idx] = a;
+    args->pipeline_idx = conn->pipeline_req_count;
+    conn->pipeline_reqs[args->pipeline_idx] = args;
     conn->pipeline_req_count++;
   }
 
@@ -424,7 +374,7 @@ bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
     handle_command(shard, conn, args);
     
     if (!(conn->state & DISPATCH_WAITING)) {
-      free(args);
+      mem_pool_return(shard->arg_pool, args);
       conn->pipeline_reqs[0] = NULL;
       conn->pipeline_req_count = 0;
     }
@@ -442,7 +392,7 @@ bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
   if (!(conn->state & DISPATCH_WAITING)) {
     // We executed all commands in the pipeline without dispatching any of them. We can execute the response callbacks right away.
     for (size_t i = 0; i < conn->pipeline_req_count; i++) {
-      free(conn->pipeline_reqs[i]);
+      mem_pool_return(shard->arg_pool, conn->pipeline_reqs[i]);
       conn->pipeline_reqs[i] = NULL;
 
       CBContext *ctx = conn->pipeline_resps[i];
@@ -573,7 +523,7 @@ uint64_t execute_callbacks(Shard *shard) {
           free(resp_ctx);
           c->pipeline_resps[i] = NULL;
           CmdArgs *req = c->pipeline_reqs[i];
-          free(req);
+          mem_pool_return(shard->arg_pool, req);
           c->pipeline_reqs[i] = NULL;
         }
         c->pipeline_resp_count = 0;
@@ -582,6 +532,7 @@ uint64_t execute_callbacks(Shard *shard) {
 
         if (c->send_buf_size > c->send_buf_sent) {
           deque_push_back_and_attach(shard->pending_writes_queue, c, Conn, pending_writes_queue_node);
+
           notify = true;
         }
       }
@@ -648,7 +599,10 @@ void run_loop(void *arg) {
   struct epoll_event events[128];
   int timeout = -1;
   while (shard->gr_state->running) {
+    uint64_t now_us = get_monotonic_usec();
     total_flushes += flush_pending_writes(shard);
+    uint64_t flush_pending_writes_elapsed = get_monotonic_usec() - now_us;
+    //printf("shard_id=%zu flush_pending_writes() elapsed=%zu\n", shard->shard_id, flush_pending_writes_elapsed);
 
     nfds = epoll_wait(fd_epoll, events, 128, timeout);
     if (nfds == -1) {
@@ -702,7 +656,12 @@ void run_loop(void *arg) {
       }
     }
 
+    uint64_t epoll_event_elapsed = get_monotonic_usec() - now_us - flush_pending_writes_elapsed;
+    //printf("shard_id=%zu epoll_loop elapsed=%zu\n", shard->shard_id, epoll_event_elapsed);
+
     total_callbacks += execute_callbacks(shard);
+    uint64_t execute_callbacks_elapsed = get_monotonic_usec() - now_us - flush_pending_writes_elapsed - epoll_event_elapsed;
+    //printf("shard_id=%zu execute_callbacks() elapsed=%zu\n", shard->shard_id, execute_callbacks_elapsed);
 
     for (size_t i = 0; i < shard->gr_state->num_shards; i++) {
       Shard *s = &shard->gr_state->shards[i];
@@ -712,8 +671,13 @@ void run_loop(void *arg) {
       }
     }
 
+    uint64_t wake_up_elapsed = get_monotonic_usec() - now_us - flush_pending_writes_elapsed - epoll_event_elapsed - execute_callbacks_elapsed;
+    //printf("shard_id=%zu wake_up() elapsed=%zu\n", shard->shard_id, wake_up_elapsed);
+
     timeout = close_idle_connections(shard);
-  }
+    uint64_t close_idle_connections_elapsed = get_monotonic_usec() - now_us - flush_pending_writes_elapsed - epoll_event_elapsed - execute_callbacks_elapsed - wake_up_elapsed;
+    //printf("shard_id=%zu close_idle_connections() elapsed=%zu\n", shard->shard_id, close_idle_connections_elapsed);  
+}
 
   shard->stats = (ShardStats){
     .total_nfds = total_nfds,
@@ -734,7 +698,7 @@ void run_loop(void *arg) {
   }
 }
 
-const size_t NUM_THREADS = 4;
+const size_t NUM_THREADS = 1;
 
 int main() {
   Shard shards[NUM_THREADS];

@@ -52,6 +52,21 @@ void deque_push_back(Deque *deque, void *data) {
     deque_push_back_node(deque, node);
 }
 
+DequeNode *deque_pop_front_node(Deque *deque) {
+    if (deque == NULL) return NULL;
+    if (deque_is_empty(deque)) return NULL;
+
+    DequeNode *node = deque->head;
+    deque->head = node->next;
+    if (deque->head) {
+        deque->head->prev = NULL;
+    } else {
+        deque->tail = NULL;
+    }
+
+    return node;
+}
+
 void* deque_pop_front(Deque *deque) {
     if (deque == NULL) return NULL;
     if (deque_is_empty(deque)) return NULL;

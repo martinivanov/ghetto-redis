@@ -9,6 +9,7 @@
 #include "hashmap.h"
 #include "vector_types.h"
 #include "mpscq.h"
+#include "mempool.h"
 
 typedef struct GRState GRState;
 
@@ -31,6 +32,8 @@ typedef struct {
   int queue_efd;
   struct mpscq *cb_queue;
   struct hashmap **dbs;
+
+  MemPool *arg_pool;
 
   ShardStats stats;
 } Shard;
