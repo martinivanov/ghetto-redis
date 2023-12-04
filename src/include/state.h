@@ -34,6 +34,8 @@ typedef struct {
   struct hashmap **dbs;
 
   MemPool *arg_pool;
+  MemPool *dping_req_pool;
+  MemPool *dping_resp_pool;
 
   ShardStats stats;
 } Shard;

@@ -70,6 +70,8 @@ void init_shards(GRState *gr_state) {
     }
 
     shard->arg_pool = mem_pool_create(1 << 16, sizeof(CmdArgs));    
+    shard->dping_req_pool = mem_pool_create(1 << 22, sizeof(__dispatch_ping_req_t));
+    shard->dping_resp_pool = mem_pool_create(1 << 22, sizeof(__dispatch_ping_resp_t));
 
     shard->gr_state = gr_state;
 
@@ -336,6 +338,7 @@ bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
 
   ParseError err;
   while (true) {
+    //printf("shard_id=%d renting args\n", shard->shard_id);
     CmdArgs *args = mem_pool_rent(shard->arg_pool);
     memset(args, 0, sizeof(*args));
     err = try_parse_request(shard, conn, args);
@@ -397,7 +400,7 @@ bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
 
       CBContext *ctx = conn->pipeline_resps[i];
       ctx->cb(shard, ctx);
-      free(ctx);
+      mem_pool_return(shard->dping_resp_pool, ctx);
       conn->pipeline_resps[i] = NULL;
     }
 
@@ -513,14 +516,15 @@ uint64_t execute_callbacks(Shard *shard) {
     count++;
 
     Conn *c = ctx->conn;
-    if (ctx->is_resp && c->shard_id == shard->shard_id) { // our connection, we can handle IO
+    if ((ctx->flags & CB_RESP) && !(ctx->flags & CB_FREE) && c->shard_id == shard->shard_id) { // our connection, we can handle IO
       c->pipeline_resps[ctx->pipeline_idx] = ctx;
       c->pipeline_resp_count++;
       if (c->pipeline_resp_count == c->pipeline_req_count) {
         for (size_t i = 0; i < c->pipeline_resp_count; i++) {
           CBContext *resp_ctx = c->pipeline_resps[i];
           resp_ctx->cb(shard, resp_ctx);
-          free(resp_ctx);
+          //printf("shard_id=%d execute resp\n", shard->shard_id);
+          // mem_pool_return(resp_ctx->src->dping_resp_pool, resp_ctx);
           c->pipeline_resps[i] = NULL;
           CmdArgs *req = c->pipeline_reqs[i];
           mem_pool_return(shard->arg_pool, req);
@@ -536,11 +540,27 @@ uint64_t execute_callbacks(Shard *shard) {
           notify = true;
         }
       }
-    } else {
+    } else if ((ctx->flags & CB_REQ) && !(ctx->flags & CB_FREE)) {
       void *arg = ctx;
       ctx->cb(shard, arg);
-      free(ctx);
-    }
+      //printf("shard_id=%d execute req\n", shard->shard_id);
+      // mem_pool_return(shard->dping_req_pool, ctx);
+    } 
+
+    //if (ctx->src->shard_id == shard->shard_id) {
+      if (ctx->flags & CB_RESP) {
+        //printf("shard_id=%d freeing resp\n", shard->shard_id);
+        mem_pool_return(ctx->src->dping_resp_pool, ctx);
+      } else {
+        //printf("shard_id=%d freeing req\n", shard->shard_id);
+        mem_pool_return(ctx->src->dping_req_pool, ctx);
+      }
+    // } else {
+    //   // dispatch to the shard that owns the ctx
+    //   //printf("dispatching free request to shard %zu\n", ctx->src->shard_id);
+    //   ctx->flags |= CB_FREE;
+    //   mpscq_enqueue(ctx->src->cb_queue, ctx);
+    // }
 
     ctx = mpscq_dequeue(shard->cb_queue);
   }

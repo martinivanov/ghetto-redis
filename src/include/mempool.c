@@ -12,8 +12,9 @@ MemPool *mem_pool_create(size_t pool_size, size_t item_size) {
     mempool->pool_item_size = item_size;
     deque_init(&mempool->free_list);
 
+    atomic_flag_clear(&mempool->lock);
+
     for (size_t i = 0; i < pool_size; i++) {
-        //void *item = &mempool->pool[i * item_size];
         MemPoolItem *item = (MemPoolItem *)((uint8_t *)mempool->pool + i * total_size);
         deque_push_back_node(&mempool->free_list, &item->free_list_node);
     }
@@ -22,15 +23,17 @@ MemPool *mem_pool_create(size_t pool_size, size_t item_size) {
 }
 
 void mem_pool_destroy(MemPool *pool) {
-    // TODO: not interesting
     free(pool->pool);
     free(pool);
 }
 
 void *mem_pool_rent(MemPool *pool) {
+    // while(atomic_flag_test_and_set(&pool->lock) == true) {}
     DequeNode *node = deque_pop_front_node(&pool->free_list);
-    if (node == NULL)
-    {
+    // atomic_flag_clear(&pool->lock);
+
+    if (node == NULL) {
+        printf("malloc\n");
         void *item = malloc(pool->pool_item_size);
         return item;
     }
@@ -43,7 +46,10 @@ void mem_pool_return(MemPool *mempool, void *mem) {
     MemPoolItem *item = (MemPoolItem *)((uint8_t *)mem - offsetof(MemPoolItem, mem));
     if ((void *)item < mempool->pool || (void *)item >= (uint8_t *)mempool->pool + mempool->total_pool_size) {
         free(mem);
+        return;
     }
 
+    // while (atomic_flag_test_and_set(&mempool->lock) == true) {}
     deque_push_back_node(&mempool->free_list, &item->free_list_node);
+    // atomic_flag_clear(&mempool->lock);
 }

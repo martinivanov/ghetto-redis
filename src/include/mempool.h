@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdatomic.h>
 
 #include "deque.h"
 
@@ -18,6 +19,7 @@ typedef struct {
   size_t pool_item_size;
   size_t pool_size;
   size_t pool_idx;
+  atomic_flag lock;
 } MemPool;
 
 MemPool *mem_pool_create(size_t pool_size, size_t elem_size);

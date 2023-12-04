@@ -10,6 +10,7 @@
 #include "state.h"
 #include "protocol.h"
 #include "kv.h"
+#include "mempool.h"
 
 inline const Command* lookup_command(CmdArgs *CmdArgs, struct hashmap* commands) {
   Command *cmd = &(Command) {
@@ -86,7 +87,11 @@ void fill_req_cb_ctx(CBContext *cb_ctx, Shard *src, Shard *dst, Conn *conn, disp
   cb_ctx->conn = conn;
   cb_ctx->cb = cb;
   cb_ctx->pipeline_idx = pipeline_idx;
-  cb_ctx->is_resp = is_resp;
+  if (is_resp) {
+    cb_ctx->flags |= CB_RESP;
+  } else {
+    cb_ctx->flags |= CB_REQ;
+  }
 }
 
 void cmd_ping(Shard *shard, Conn *conn, const CmdArgs *args) {
@@ -444,34 +449,116 @@ void cmd_mset(Shard *shard, Conn *conn, const CmdArgs *args) {
   write_simple_string(conn, "OK", 2);
 }
 
-DEFINE_COMMAND(
-  dispatch_ping,
-  KEYED_REQ_CTX(),
-  RESP_CTX(
-    size_t sid;
-  ),
-  CMD_VARS(
-    uint8_t *key = key_buf_ptr;
-    size_t sid = shard->shard_id;
-  ),
-  CMD_PRE_INLINE_EXEC(),
-  CMD_EXEC(),
-  CMD_RESP(
+// DEFINE_COMMAND(
+//   dispatch_ping,
+//   KEYED_REQ_CTX(),
+//   RESP_CTX(
+//     size_t sid;
+//   ),
+//   CMD_VARS(
+//     uint8_t *key = key_buf_ptr;
+//     size_t sid = shard->shard_id;
+//   ),
+//   CMD_PRE_INLINE_EXEC(),
+//   CMD_EXEC(),
+//   CMD_RESP(
+//     write_integer(conn, sid);
+//   ),
+//   CMD_PRE_DISPATCH(
+//     ctx->ctx.key = key;
+//     ctx->ctx.keylen = keylen;
+//     ctx->ctx.hash = hash; 
+//   ),
+//   CMD_PRE_DISPATCH_EXEC(
+//     size_t sid = cb_ctx->dst;
+//   ),
+//   CMD_POST_DISPATCH_EXEC(
+//     resp_ctx->sid = sid;
+//   ),
+//   CMD_PRE_RESP(
+//     size_t sid = cb_ctx->src->shard_id;
+//   ),
+//   CMD_POST_RESP()
+// )
+
+
+void __cmd_dispatch_ping_sync_pipeline_resp(Shard *shard, __dispatch_ping_resp_t *ctx)
+{
+  CBContext *cb_ctx = (CBContext *)ctx;
+  Conn *conn = cb_ctx->conn;
+  size_t sid = cb_ctx->src->shard_id;
+  write_integer(conn, sid);
+}
+void __cmd_dispatch_ping_resp(Shard *shard, __dispatch_ping_resp_t *ctx)
+{
+  CBContext *cb_ctx = (CBContext *)ctx;
+  Conn *conn = cb_ctx->conn;
+  size_t sid = cb_ctx->src->shard_id;
+  write_integer(conn, sid);
+}
+void __cmd_dispatch_ping_req(Shard *shard, __dispatch_ping_req_t *ctx)
+{
+  CBContext *cb_ctx = (CBContext *)ctx;
+  Conn *conn = (Conn *)cb_ctx->conn;
+  struct hashmap *db = shard->dbs[conn->db];
+  KeyedCBContext *keyed_ctx = (KeyedCBContext *)ctx;
+  uint8_t *key = keyed_ctx->key;
+  size_t keylen = keyed_ctx->keylen;
+  uint64_t hash = keyed_ctx->hash;
+  size_t sid = cb_ctx->dst;
+  //printf("shard_id=%d renting resp_ctx\n", shard->shard_id);
+  __dispatch_ping_resp_t *resp_ctx = mem_pool_rent(shard->dping_resp_pool);
+  resp_ctx->ctx.flags = CB_NONE;
+  fill_req_cb_ctx((CBContext *)resp_ctx, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)__cmd_dispatch_ping_resp, cb_ctx->pipeline_idx, 1);
+  resp_ctx->sid = sid;
+  mpscq_enqueue(cb_ctx->src->cb_queue, resp_ctx);
+  __c11_atomic_store(&cb_ctx->src->notify_cb, 1, 5);
+}
+void cmd_dispatch_ping(Shard *shard, Conn *conn, const CmdArgs *args)
+{
+  const GRState *gr_state = shard->gr_state;
+  const uint8_t *key_buf_ptr = args->buf + args->offsets[1];
+  const size_t keylen = args->lens[1];
+  const uint64_t hash = hashmap_xxhash3(key_buf_ptr, keylen, 0, 0);
+  const size_t shard_id = hash % gr_state->num_shards;
+  ;
+  uint8_t *key = key_buf_ptr;
+  size_t sid = shard->shard_id;
+  if (ALLOW_INLINE_EXEC && shard_id == shard->shard_id && !(conn->state & PIPELINE))
+  {
+    struct hashmap *db = shard->dbs[conn->db];
     write_integer(conn, sid);
-  ),
-  CMD_PRE_DISPATCH(
+  }
+  else if (ALLOW_INLINE_EXEC && shard_id == shard->shard_id && (conn->state & PIPELINE))
+  {
+    struct hashmap *db = shard->dbs[conn->db];
+    //printf("shard_id=%d renting req_ctx\n", shard->shard_id);
+    __dispatch_ping_resp_t *resp_ctx = mem_pool_rent(shard->dping_resp_pool);
+    resp_ctx->ctx.flags = CB_NONE;
+    fill_req_cb_ctx((CBContext *)resp_ctx, shard, shard, conn, (dispatch_cb)__cmd_dispatch_ping_sync_pipeline_resp, args->pipeline_idx, 1);
+    resp_ctx->sid = sid;
+    conn->pipeline_resps[args->pipeline_idx] = (CBContext *)resp_ctx;
+    conn->pipeline_resp_count++;
+  }
+  else
+  {
+    Shard *target_shard = &gr_state->shards[shard_id];
+
+    //printf("shard_id=%d renting req_ctx\n", shard->shard_id);
+    __dispatch_ping_req_t *ctx = mem_pool_rent(shard->dping_req_pool);
+    ctx->ctx.base.flags = CB_NONE;
+    fill_req_cb_ctx((CBContext *)ctx, shard, target_shard, conn, (dispatch_cb)__cmd_dispatch_ping_req, args->pipeline_idx, 0);
     ctx->ctx.key = key;
     ctx->ctx.keylen = keylen;
-    ctx->ctx.hash = hash; 
-  ),
-  CMD_PRE_DISPATCH_EXEC(
-    size_t sid = cb_ctx->dst;
-  ),
-  CMD_POST_DISPATCH_EXEC(
-    resp_ctx->sid = sid;
-  ),
-  CMD_PRE_RESP(
-    size_t sid = cb_ctx->src->shard_id;
-  ),
-  CMD_POST_RESP()
-)
+    ctx->ctx.hash = hash;
+    if (mpscq_enqueue(target_shard->cb_queue, ctx))
+    {
+      conn->state |= DISPATCH_WAITING;
+      __c11_atomic_store(&target_shard->notify_cb, 1, 5);
+    }
+    else
+    {
+      write_simple_generic_error(conn, "shard dispatch queue full");
+    }
+  }
+}

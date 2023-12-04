@@ -74,6 +74,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
     cmd_pre_resp                                                                                                                                                                             \
     cmd_resp                                                                                                                                                                                 \
     cmd_post_resp                                                                                                                                                                            \
+    free(ctx);                                                                                                                                                                               \
     /*atomic_store(&shard->notify_cb, true);*/                                                                                                                                                  \
   }                                                                                                                                                                                          \
   void __cmd_##name##_req(Shard *shard, __##name##_req_t *ctx)                                                                                                                               \
@@ -89,6 +90,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
     cmd_post_dispatch_exec                                                                                                                                                                   \
     mpscq_enqueue(cb_ctx->src->cb_queue, resp_ctx);                                                                                                                                          \
     atomic_store(&cb_ctx->src->notify_cb, true);                                                                                                                                             \
+    free(ctx);                                                                                                                                                                               \
   }                                                                                                                                                                                          \
   void cmd_##name(Shard *shard, Conn *conn, const CmdArgs *args)                                                                                                                             \
   {                                                                                                                                                                                          \
@@ -141,11 +143,23 @@ typedef struct {
     command_func func;
 } Command;
 
+typedef enum {
+  CB_NONE = 0,
+  CB_REQ = 1 << 0,
+  CB_RESP = 1 << 1,
+  CB_FREE = 1 << 2,
+} CBFlags;
+
+typedef enum {
+  CB_DPING_REQ,
+  CB_DPING_RESP,
+} CBType;
+
 typedef struct {
   Shard *src;
   Shard *dst;
   Conn *conn;
-  bool is_resp;
+  CBFlags flags;
   size_t pipeline_idx;
   dispatch_cb cb;
 } CBContext;
@@ -180,5 +194,15 @@ void cmd_clients(Shard *shard, Conn *conn, const CmdArgs *args);
 void cmd_mget(Shard *shard, Conn *conn, const CmdArgs *args);
 void cmd_mset(Shard *shard, Conn *conn, const CmdArgs *args);
 void cmd_dispatch_ping(Shard *shard, Conn *conn, const CmdArgs *args);
+
+typedef struct
+{
+  KeyedCBContext ctx;
+} __dispatch_ping_req_t;
+typedef struct
+{
+  CBContext ctx;
+  size_t sid;
+} __dispatch_ping_resp_t;
 
 #endif
