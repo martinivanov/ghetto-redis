@@ -29,7 +29,7 @@ typedef struct {
   Deque pending_writes_queue;
   atomic_bool notify_cb;
   int queue_efd;
-  struct mpscq *cb_queue;
+  struct mpscq **cb_queues;
   struct hashmap **dbs;
 
   ShardStats stats;

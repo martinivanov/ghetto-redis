@@ -78,7 +78,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
     __##name##_resp_t *resp_ctx = malloc(sizeof(__##name##_resp_t));                           \
     fill_req_cb_ctx((CBContext *)resp_ctx, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)__cmd_##name##_resp); \
     cmd_post_dispatch_exec                                                       \
-    mpscq_enqueue(cb_ctx->src->cb_queue, resp_ctx);\
+    mpscq_enqueue(cb_ctx->src->cb_queues[shard->shard_id], resp_ctx);\
     atomic_store(&cb_ctx->src->notify_cb, true);                          \
   }                                                                       \
   void cmd_##name(Shard *shard, Conn *conn, const CmdArgs *args)          \
@@ -100,7 +100,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
       __##name##_req_t *ctx = malloc(sizeof(__##name##_req_t));                                 \
       fill_req_cb_ctx((CBContext *)ctx, shard, target_shard, conn, (dispatch_cb)__cmd_##name##_req); \
       cmd_pre_dispatch                                                            \
-      if (mpscq_enqueue(target_shard->cb_queue, ctx)) {                   \
+      if (mpscq_enqueue(target_shard->cb_queues[shard->shard_id], ctx)) {                   \
         conn->state |= DISPATCH_WAITING;\
         atomic_store(&target_shard->notify_cb, true);                       \
       } else {\

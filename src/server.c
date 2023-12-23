@@ -59,7 +59,11 @@ void init_shards(GRState *gr_state) {
     }
 
     shard->queue_efd = queue_efd;
-    shard->cb_queue = mpscq_create(NULL, 100000);
+    //shard->cb_queue = mpscq_create(NULL, 100000);
+    shard->cb_queues = (struct mpscq **)malloc(sizeof(struct mpscq *) * gr_state->num_shards);
+    for (size_t j = 0; j < gr_state->num_shards; j++) {
+      shard->cb_queues[j] = mpscq_create(NULL, 100000);
+    }
 
     uint64_t seed = get_monotonic_usec(NULL);
     shard->dbs = (struct hashmap **)malloc(sizeof(struct hashmap *) * gr_state->num_dbs);
@@ -82,7 +86,10 @@ void free_server_state(GRState *gr_state) {
     free(shard->dbs);
     free_vector_Conn_ptr(shard->conns);
     free(shard->conns);
-    mpscq_destroy(shard->cb_queue);
+    for (size_t j = 0; j < gr_state->num_shards; j++) {
+      mpscq_destroy(shard->cb_queues[j]);
+    }
+    free(shard->cb_queues);
     close(shard->queue_efd);
   }
   hashmap_free(gr_state->commands);
@@ -439,27 +446,36 @@ uint64_t close_idle_connections(Shard *shard) {
 }
 
 uint64_t execute_callbacks(Shard *shard) {
-  CBContext *ctx = mpscq_dequeue(shard->cb_queue);
+  size_t num_shards = shard->gr_state->num_shards;
+
   bool notify = false;
   uint64_t count = 0;
-  while (ctx != NULL) {
-    count++;
-    void *arg = ctx;
-    ctx->cb(shard, arg);
-    Conn *c = ctx->conn;
-
-    if (c->shard_id == shard->shard_id) { // our connection, we can handle IO
-         state_request_cb(shard, c);
-
-      if (c->send_buf_size > c->send_buf_sent) {
-        deque_push_back_and_attach(shard->pending_writes_queue, c, Conn, pending_writes_queue_node);
-        notify = true;
-      }
+  for (size_t i = 0; i < num_shards; i++) {
+    if (i == shard->shard_id) {
+      continue;
     }
 
-    free(ctx);
+    struct mpscq *cb_queue = shard->cb_queues[i];
+    CBContext *ctx = mpscq_dequeue(cb_queue);
+    while (ctx != NULL) {
+      count++;
+      void *arg = ctx;
+      ctx->cb(shard, arg);
+      Conn *c = ctx->conn;
 
-    ctx = mpscq_dequeue(shard->cb_queue);
+      if (c->shard_id == shard->shard_id) { // our connection, we can handle IO
+          state_request_cb(shard, c);
+
+        if (c->send_buf_size > c->send_buf_sent) {
+          deque_push_back_and_attach(shard->pending_writes_queue, c, Conn, pending_writes_queue_node);
+          notify = true;
+        }
+      }
+
+      free(ctx);
+
+      ctx = mpscq_dequeue(cb_queue);
+    } 
   }
 
   if (notify) {
@@ -601,7 +617,7 @@ void run_loop(void *arg) {
   }
 }
 
-const size_t NUM_THREADS = 2;
+const size_t NUM_THREADS = 4;
 
 int main() {
   Shard shards[NUM_THREADS];
