@@ -8,7 +8,7 @@
 #include "deque.h"
 #include "hashmap.h"
 #include "vector_types.h"
-#include "mpscq.h"
+#include "spscq.h"
 
 typedef struct GRState GRState;
 
@@ -29,7 +29,7 @@ typedef struct {
   Deque pending_writes_queue;
   atomic_bool notify_cb;
   int queue_efd;
-  struct mpscq **cb_queues;
+  struct spscq **cb_queues;
   struct hashmap **dbs;
 
   ShardStats stats;

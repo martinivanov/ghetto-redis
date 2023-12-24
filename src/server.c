@@ -28,6 +28,7 @@
 #include "include/state.h"
 #include "include/commands.h"
 #include "include/kv.h"
+#include "include/spscq.h"
 
 #define unlikely(expr) __builtin_expect(!!(expr), 0)
 #define likely(expr) __builtin_expect(!!(expr), 1)
@@ -59,10 +60,9 @@ void init_shards(GRState *gr_state) {
     }
 
     shard->queue_efd = queue_efd;
-    //shard->cb_queue = mpscq_create(NULL, 100000);
-    shard->cb_queues = (struct mpscq **)malloc(sizeof(struct mpscq *) * gr_state->num_shards);
+    shard->cb_queues = (struct spscq **)malloc(sizeof(struct spscq *) * gr_state->num_shards);
     for (size_t j = 0; j < gr_state->num_shards; j++) {
-      shard->cb_queues[j] = mpscq_create(NULL, 100000);
+      shard->cb_queues[j] = spscq_create(NULL, 100000);
     }
 
     uint64_t seed = get_monotonic_usec(NULL);
@@ -87,7 +87,7 @@ void free_server_state(GRState *gr_state) {
     free_vector_Conn_ptr(shard->conns);
     free(shard->conns);
     for (size_t j = 0; j < gr_state->num_shards; j++) {
-      mpscq_destroy(shard->cb_queues[j]);
+      spscq_destroy(shard->cb_queues[j]);
     }
     free(shard->cb_queues);
     close(shard->queue_efd);
@@ -455,8 +455,8 @@ uint64_t execute_callbacks(Shard *shard) {
       continue;
     }
 
-    struct mpscq *cb_queue = shard->cb_queues[i];
-    CBContext *ctx = mpscq_dequeue(cb_queue);
+    struct spscq *cb_queue = shard->cb_queues[i];
+    CBContext *ctx = spscq_dequeue(cb_queue);
     while (ctx != NULL) {
       count++;
       void *arg = ctx;
@@ -474,7 +474,7 @@ uint64_t execute_callbacks(Shard *shard) {
 
       free(ctx);
 
-      ctx = mpscq_dequeue(cb_queue);
+      ctx = spscq_dequeue(cb_queue);
     } 
   }
 
@@ -617,7 +617,7 @@ void run_loop(void *arg) {
   }
 }
 
-const size_t NUM_THREADS = 4;
+const size_t NUM_THREADS = 2;
 
 int main() {
   Shard shards[NUM_THREADS];
