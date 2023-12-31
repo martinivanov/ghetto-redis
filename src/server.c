@@ -171,52 +171,6 @@ int32_t accept_new_conn(Shard *shard, int fd_listener) {
   return client_fd;
 }
 
-bool try_flush_buffer(Conn *conn) {
-  size_t rv = 0;
-  do {
-    size_t remaining = conn->send_buf_size - conn->send_buf_sent;
-
-    LOG_DEBUG_WITH_CTX(conn->shard_id, "conn->send_buf_size=%zu conn->send_buf_sent=%zu remaining=%zu", conn->send_buf_size, conn->send_buf_sent, remaining);
-    LOG_DEBUG_WITH_CTX(conn->shard_id, "conn->send_buf:%.*s", (int)MESSAGE_MAX_LENGTH, conn->send_buf);
-
-    rv = write(conn->fd, &conn->send_buf[conn->send_buf_sent], remaining);
-  } while (rv < 0 && errno == EINTR);
-
-  if (rv < 0 && errno == EAGAIN) {
-    conn->state |= BLOCKED;
-    return false;
-  }
-
-  if (rv < 0) {
-    LOG_WARN("write() error");
-    conn->state = END;
-    return false;
-  }
-
-  conn->send_buf_sent += (size_t)rv;
-
-  if (conn->send_buf_sent > conn->send_buf_size) {
-    LOG_DEBUG("conn->send_buf_sent=%zu conn->send_buf_size=%zu", conn->send_buf_sent, conn->send_buf_size);
-    assert(conn->send_buf_sent <= conn->send_buf_size);
-    panic("send_buf_sent > send_buf_size");
-  }
-
-  if (conn->send_buf_sent == conn->send_buf_size) {
-    LOG_DEBUG("Response sent fully --- conn->send_buf_sent=%zu conn->send_buf_size=%zu", conn->send_buf_sent, conn->send_buf_size);
-    conn->send_buf_sent = 0;
-    conn->send_buf_size = 0;
-    return false;
-  }
-
-  // try to flush again as we have remaining data in the write buffer
-  return true;
-}
-
-void state_response(Conn *conn) {
-  while (try_flush_buffer(conn)) {
-  }
-}
-
 void handle_command(Shard *shard, Conn *conn, CmdArgs *args) {
   const Command *cmd = lookup_command(args, shard->gr_state->commands);
   
@@ -406,28 +360,6 @@ void epoll_modify(int fd_epoll, int fd, uint32_t events) {
   }
 }
 
-uint64_t flush_pending_writes(Shard *shard) {
-    uint64_t count = 0;
-    while (!deque_is_empty(&shard->pending_writes_queue)) {
-      Conn *conn = deque_pop_front(&shard->pending_writes_queue);
-      if (conn == NULL) {
-        continue;
-      }
-
-      //TODO: find a better way to avoid unnecessary writes
-      if (conn->send_buf_size == conn->send_buf_sent) {
-        continue;
-      }
-
-      count++;
-
-      conn->pending_writes_queue_node = NULL;
-      state_response(conn);
-    }
-
-    return count;
-}
-
 #define MAX_IDLE_MS 60000
 
 uint64_t close_idle_connections(Shard *shard) {
@@ -503,6 +435,19 @@ int pin_shard_to_cpu(Shard *shard) {
   return 0;
 }
 
+bool wakeup_pending_shards(GRState *gr_state) {
+  bool notify = false;
+  for (size_t i = 0; i < gr_state->num_shards; i++) {
+    Shard *s = &gr_state->shards[i];
+    if (atomic_exchange(&s->notify_cb, false)) {
+      write(s->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
+      notify = true;
+    }
+  }
+
+  return notify;
+}
+
 void run_loop(void *arg) {
   Shard *shard = (Shard*)arg;
 
@@ -556,8 +501,6 @@ void run_loop(void *arg) {
   struct epoll_event events[128];
   int timeout = -1;
   while (shard->gr_state->running) {
-    total_flushes += flush_pending_writes(shard);
-
     nfds = epoll_wait(fd_epoll, events, 128, timeout);
     if (nfds == -1) {
       perror("epoll_wait()");
@@ -590,7 +533,7 @@ void run_loop(void *arg) {
         } else if (ev.events & EPOLLOUT) {
           total_write_events++;
           LOG_DEBUG("EPOLLOUT");
-          state_response(conn);
+          flush_response_buffer(conn);
           epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
         }
 
@@ -598,10 +541,6 @@ void run_loop(void *arg) {
           epoll_unregister(fd_epoll, fd);
           conn_done(shard, conn);
         } else {
-          if (conn->send_buf_size != conn->send_buf_sent) {
-            deque_push_back_and_attach(shard->pending_writes_queue, conn, Conn, pending_writes_queue_node);
-          }
-
           if (conn->state & BLOCKED) {
             conn->state &= ~BLOCKED;
             epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
@@ -612,14 +551,12 @@ void run_loop(void *arg) {
 
     total_callbacks += execute_callbacks(shard);
 
-    for (size_t i = 0; i < shard->gr_state->num_shards; i++) {
-      Shard *s = &shard->gr_state->shards[i];
-      if (atomic_exchange(&s->notify_cb, false)) {
-        write(s->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
-      }
-    }
-
     timeout = close_idle_connections(shard);
+
+    bool notify = wakeup_pending_shards(shard->gr_state);
+    if (notify) {
+      timeout = 0;
+    }
   }
 
   shard->stats = (ShardStats){
@@ -645,6 +582,7 @@ const size_t NUM_THREADS = 1;
 
 int main() {
   Shard shards[NUM_THREADS];
+  // TODO: rename GRState to GRServer?
   GRState gr_state = {
     .running = true,
     .num_dbs = 16,

@@ -73,4 +73,6 @@ ParseError parse_number(uint8_t **cur, uint8_t *end, size_t *result);
 ParseError parse_resp_request(Conn *conn, CmdArgs *args);
 ParseError parse_inline_request(Conn *conn, CmdArgs *args);
 
+void flush_response_buffer(Conn *conn);
+
 #endif

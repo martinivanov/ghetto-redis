@@ -67,6 +67,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
     cmd_post_resp                                                         \
     conn->state &= ~DISPATCH_WAITING;                                     \
     atomic_store(&shard->notify_cb, true);                                 \
+    flush_response_buffer(conn);                                          \
   }\
   void __cmd_##name##_req(Shard *shard, __##name##_req_t *ctx)                       \
   {                                                                       \
@@ -96,6 +97,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
       cmd_pre_inline_exec                                                 \
       cmd_exec                                                           \
       cmd_resp                                                           \
+      flush_response_buffer(conn);                                        \
     } else {                                                              \
       Shard *target_shard = &gr_state->shards[shard_id];                   \
       __##name##_req_t *ctx = malloc(sizeof(__##name##_req_t));                                 \

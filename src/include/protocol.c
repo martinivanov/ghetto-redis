@@ -208,3 +208,49 @@ ParseError parse_inline_request(Conn *conn, CmdArgs *args) {
 
   return PARSE_OK;
 }
+
+bool try_flush_buffer(Conn *conn) {
+  size_t rv = 0;
+  do {
+    size_t remaining = conn->send_buf_size - conn->send_buf_sent;
+
+    LOG_DEBUG_WITH_CTX(conn->shard_id, "conn->send_buf_size=%zu conn->send_buf_sent=%zu remaining=%zu", conn->send_buf_size, conn->send_buf_sent, remaining);
+    LOG_DEBUG_WITH_CTX(conn->shard_id, "conn->send_buf:%.*s", (int)MESSAGE_MAX_LENGTH, conn->send_buf);
+
+    rv = write(conn->fd, &conn->send_buf[conn->send_buf_sent], remaining);
+  } while (rv < 0 && errno == EINTR);
+
+  if (rv < 0 && errno == EAGAIN) {
+    conn->state |= BLOCKED;
+    return false;
+  }
+
+  if (rv < 0) {
+    LOG_WARN("write() error");
+    conn->state = END;
+    return false;
+  }
+
+  conn->send_buf_sent += (size_t)rv;
+
+  if (conn->send_buf_sent > conn->send_buf_size) {
+    LOG_DEBUG("conn->send_buf_sent=%zu conn->send_buf_size=%zu", conn->send_buf_sent, conn->send_buf_size);
+    assert(conn->send_buf_sent <= conn->send_buf_size);
+    panic("send_buf_sent > send_buf_size");
+  }
+
+  if (conn->send_buf_sent == conn->send_buf_size) {
+    LOG_DEBUG("Response sent fully --- conn->send_buf_sent=%zu conn->send_buf_size=%zu", conn->send_buf_sent, conn->send_buf_size);
+    conn->send_buf_sent = 0;
+    conn->send_buf_size = 0;
+    return false;
+  }
+
+  // try to flush again as we have remaining data in the write buffer
+  return true;
+}
+
+void flush_response_buffer(Conn *conn) {
+  while (try_flush_buffer(conn)) {
+  }
+}
