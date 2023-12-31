@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include <asm-generic/errno-base.h>
 #include <asm-generic/socket.h>
 #include <assert.h>
@@ -17,6 +19,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sched.h>
 
 #include "include/logging.h"
 #include "include/protocol.h"
@@ -29,6 +32,8 @@
 #include "include/commands.h"
 #include "include/kv.h"
 #include "include/spscq.h"
+
+#define _GNU_SOURCE
 
 #define unlikely(expr) __builtin_expect(!!(expr), 0)
 #define likely(expr) __builtin_expect(!!(expr), 1)
@@ -485,8 +490,27 @@ uint64_t execute_callbacks(Shard *shard) {
   return count;
 }
 
+int pin_shard_to_cpu(Shard *shard) {
+  cpu_set_t cpuset;
+  CPU_ZERO(&cpuset);
+  CPU_SET(shard->shard_id + 1, &cpuset);
+  int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+  if (rc != 0) {
+    LOG_WARN("pthread_setaffinity_np()");
+    return -1;
+  }
+
+  return 0;
+}
+
 void run_loop(void *arg) {
   Shard *shard = (Shard*)arg;
+
+  // set thread affinity
+  int pin_err = pin_shard_to_cpu(shard);
+  if (pin_err) {
+    panic("pin_shard_to_cpu() failed");
+  }
 
   int fd_listener = socket(AF_INET, SOCK_STREAM, 0);
   int val = 1;
@@ -617,7 +641,7 @@ void run_loop(void *arg) {
   }
 }
 
-const size_t NUM_THREADS = 2;
+const size_t NUM_THREADS = 1;
 
 int main() {
   Shard shards[NUM_THREADS];
