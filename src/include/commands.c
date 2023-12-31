@@ -448,26 +448,34 @@ void cmd_mset(Shard *shard, Conn *conn, const CmdArgs *args) {
 
 DEFINE_COMMAND(
   dispatch_ping,
-  KEYED_REQ_CTX(),
-  RESP_CTX(),
+  KEYED_REQ_CTX(
+    size_t shard_id;
+  ),
+  RESP_CTX(
+    size_t shard_id;
+  ),
   CMD_VARS(
     uint8_t *key = key_buf_ptr;
   ),
   CMD_PRE_INLINE_EXEC(),
   CMD_EXEC(),
   CMD_RESP(
-    write_integer(conn, 1);
+    write_integer(conn, shard_id);
   ),
   CMD_PRE_DISPATCH(
     ctx->ctx.key = malloc(keylen);
     memcpy(ctx->ctx.key, key, keylen);
     ctx->ctx.keylen = keylen;
-    ctx->ctx.hash = hash; 
+    ctx->ctx.hash = hash;
+    ctx->shard_id = shard_id;
   ),
   CMD_PRE_DISPATCH_EXEC(),
   CMD_POST_DISPATCH_EXEC(
+    resp_ctx->shard_id = ctx->shard_id;
     free(keyed_ctx->key);
   ),
-  CMD_PRE_RESP(),
+  CMD_PRE_RESP(
+    size_t shard_id = ctx->shard_id;
+  ),
   CMD_POST_RESP()
 )
