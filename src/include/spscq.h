@@ -18,5 +18,6 @@ void spscq_destroy(struct spscq *q);
 
 bool spscq_enqueue(struct spscq *q, void *data);
 void *spscq_dequeue(struct spscq *q);
+bool spscq_is_empty(struct spscq *q);
 
 #endif // SPSCQ_H
