@@ -56,7 +56,6 @@ void init_shards(GRState *gr_state) {
     }
 
     deque_init(&shard->idle_conn_queue);
-    deque_init(&shard->pending_writes_queue);
 
     int queue_efd = eventfd(0, 0);
     if (queue_efd == -1) {
@@ -77,6 +76,8 @@ void init_shards(GRState *gr_state) {
     }
 
     shard->gr_state = gr_state;
+
+    shard->notify_mask = 0;
 
     shard->stats = (ShardStats){0};
   }
@@ -185,6 +186,7 @@ void handle_command(Shard *shard, Conn *conn, CmdArgs *args) {
              "unknown command '%.*s', with args beginning with: '%.*s'",
              (int)cmd_name_len, cmd_name, (int)first_arg_len, first_arg);
     write_simple_generic_error(conn, message);
+    flush_response_buffer(conn);
     return;
   }
 
@@ -192,10 +194,15 @@ void handle_command(Shard *shard, Conn *conn, CmdArgs *args) {
     char message[64];
     snprintf(message, sizeof(message), "wrong number of arguments for '%.*s' command", (int)cmd->name_len, cmd->name);
     write_simple_generic_error(conn, message);
+    flush_response_buffer(conn);
     return;
   }
 
   cmd->func(shard, conn, args);
+
+  if (!(conn->state & DISPATCH_WAITING)) {
+    flush_response_buffer(conn);
+  }
 }
 
 bool try_handle_request(Shard *shard, Conn *conn) {
@@ -310,12 +317,6 @@ bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
   return conn->state & (END | DISPATCH_WAITING);
 }
 
-void state_request_cb(Shard *shard, Conn *conn) {
-  LOG_DEBUG_WITH_CTX(shard->shard_id, "state_request_cb");
-  while (try_fill_buffer(shard, conn, false)) {
-  }
-}
-
 void state_request_epoll(Shard *shard, Conn *conn) {
   LOG_DEBUG_WITH_CTX(shard->shard_id, "state_request_epoll");
   while (try_fill_buffer(shard, conn, true)) {
@@ -324,8 +325,6 @@ void state_request_epoll(Shard *shard, Conn *conn) {
 
 void conn_done(Shard *shard, Conn *conn) {
   close(conn->fd);
-  deque_detach(&shard->pending_writes_queue, conn->pending_writes_queue_node);
-  free(conn->pending_writes_queue_node);
   deque_detach(&shard->idle_conn_queue, conn->idle_conn_queue_node);
   free(conn->idle_conn_queue_node);
   shard->conns->array[conn->fd] = NULL;
@@ -385,7 +384,6 @@ uint64_t close_idle_connections(Shard *shard) {
 uint64_t execute_callbacks(Shard *shard) {
   size_t num_shards = shard->gr_state->num_shards;
 
-  bool notify = false;
   uint64_t count = 0;
   for (size_t i = 0; i < num_shards; i++) {
     if (i == shard->shard_id) {
@@ -393,33 +391,38 @@ uint64_t execute_callbacks(Shard *shard) {
     }
 
     struct spscq *cb_queue = shard->cb_queues[i];
-    CBContext *ctx = spscq_dequeue(cb_queue);
-    while (ctx != NULL) {
-      count++;
-      void *arg = ctx;
-      ctx->cb(shard, arg);
-      Conn *c = ctx->conn;
-
-      if (c->shard_id == shard->shard_id) { // our connection, we can handle IO
-          state_request_cb(shard, c);
-
-        if (c->send_buf_size > c->send_buf_sent) {
-          deque_push_back_and_attach(shard->pending_writes_queue, c, Conn, pending_writes_queue_node);
-          notify = true;
-        }
+    while (true) {
+      CBContext *ctx = spscq_dequeue(cb_queue);
+      if (ctx == NULL) {
+        break;
       }
 
-      free(ctx);
+      count++;
 
-      ctx = spscq_dequeue(cb_queue);
+      void *arg = ctx;
+      ctx->cb(shard, arg);
+
+      free(ctx);
     } 
   }
 
-  if (notify) {
-    write(shard->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
+  return count;
+}
+
+bool shard_has_pending_callbacks(Shard *shard) {
+  size_t num_shards = shard->gr_state->num_shards;
+  for (size_t i = 0; i < num_shards; i++) {
+    if (i == shard->shard_id) {
+      continue;
+    }
+
+    struct spscq *cb_queue = shard->cb_queues[i];
+    if (!spscq_is_empty(cb_queue)) {
+      return true;
+    }
   }
 
-  return count;
+  return false;
 }
 
 int pin_shard_to_cpu(Shard *shard) {
@@ -435,18 +438,25 @@ int pin_shard_to_cpu(Shard *shard) {
   return 0;
 }
 
-bool wakeup_pending_shards(GRState *gr_state) {
-  bool notify = false;
-  for (size_t i = 0; i < gr_state->num_shards; i++) {
-    Shard *s = &gr_state->shards[i];
-    if (atomic_exchange(&s->notify_cb, false)) {
-      write(s->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
-      notify = true;
+bool wakeup_pending_shards(Shard *shard) {
+  int num_shards = shard->gr_state->num_shards;
+  uint64_t mask = shard->notify_mask;
+  bool notifed = false;
+  for (int i = 0; i < num_shards; i++) {
+    if (mask & (1 << i)) {
+      Shard *s = &shard->gr_state->shards[i];
+      if (atomic_exchange(&s->sleeping, false)) {
+        write(s->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
+      }
     }
   }
 
-  return notify;
+  // reset the mask
+  shard->notify_mask = 0;
+
+  return notifed;
 }
+
 
 void run_loop(void *arg) {
   Shard *shard = (Shard*)arg;
@@ -501,13 +511,31 @@ void run_loop(void *arg) {
   struct epoll_event events[128];
   int timeout = -1;
   while (shard->gr_state->running) {
-    nfds = epoll_wait(fd_epoll, events, 128, timeout);
-    if (nfds == -1) {
+    wakeup_pending_shards(shard);
+
+    size_t cb_count = execute_callbacks(shard); 
+    total_callbacks += cb_count;
+    if (cb_count > 0) {
+      nfds = epoll_wait(fd_epoll, events, 128, 0);
+    } else {
+      atomic_store(&shard->sleeping, true);
+      if (shard_has_pending_callbacks(shard)) {
+        atomic_store(&shard->sleeping, false);
+        continue;
+      }
+
+      nfds = epoll_wait(fd_epoll, events, 128, timeout);
+      atomic_store(&shard->sleeping, false);
+    }
+
+    if (nfds == -1 && errno == EINTR) {
+      continue;
+    }
+
+    if (nfds < 0) {
       perror("epoll_wait()");
       exit(1);
     }
-
-    total_nfds += nfds;
 
     for (int i = 0; i < nfds; i++) {
       if (events[i].data.fd == fd_listener) {
@@ -530,7 +558,9 @@ void run_loop(void *arg) {
         if (ev.events & EPOLLIN) {
           total_read_events++;
           state_request_epoll(shard, conn);
-        } else if (ev.events & EPOLLOUT) {
+        } 
+        
+        if (ev.events & EPOLLOUT) {
           total_write_events++;
           LOG_DEBUG("EPOLLOUT");
           flush_response_buffer(conn);
@@ -538,6 +568,7 @@ void run_loop(void *arg) {
         }
 
         if (conn->state == END || ev.events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+          LOG_INFO("cloging fd=%d", fd);
           epoll_unregister(fd_epoll, fd);
           conn_done(shard, conn);
         } else {
@@ -549,14 +580,7 @@ void run_loop(void *arg) {
       }
     }
 
-    total_callbacks += execute_callbacks(shard);
-
-    timeout = close_idle_connections(shard);
-
-    bool notify = wakeup_pending_shards(shard->gr_state);
-    if (notify) {
-      timeout = 0;
-    }
+    timeout = 1000; //close_idle_connections(shard);
   }
 
   shard->stats = (ShardStats){
@@ -578,7 +602,7 @@ void run_loop(void *arg) {
   }
 }
 
-const size_t NUM_THREADS = 1;
+const size_t NUM_THREADS = 4;
 
 int main() {
   Shard shards[NUM_THREADS];

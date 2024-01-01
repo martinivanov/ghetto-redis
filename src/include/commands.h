@@ -66,7 +66,6 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
     cmd_resp                                                              \
     cmd_post_resp                                                         \
     conn->state &= ~DISPATCH_WAITING;                                     \
-    atomic_store(&shard->notify_cb, true);                                 \
     flush_response_buffer(conn);                                          \
   }\
   void __cmd_##name##_req(Shard *shard, __##name##_req_t *ctx)                       \
@@ -81,7 +80,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
     fill_req_cb_ctx((CBContext *)resp_ctx, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)__cmd_##name##_resp); \
     cmd_post_dispatch_exec                                                       \
     spscq_enqueue(cb_ctx->src->cb_queues[shard->shard_id], resp_ctx);\
-    atomic_store(&cb_ctx->src->notify_cb, true);                          \
+    shard->notify_mask |= (1 << cb_ctx->src->shard_id);                   \
   }                                                                       \
   void cmd_##name(Shard *shard, Conn *conn, const CmdArgs *args)          \
   {                                                                       \
@@ -97,7 +96,6 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
       cmd_pre_inline_exec                                                 \
       cmd_exec                                                           \
       cmd_resp                                                           \
-      flush_response_buffer(conn);                                        \
     } else {                                                              \
       Shard *target_shard = &gr_state->shards[shard_id];                   \
       __##name##_req_t *ctx = malloc(sizeof(__##name##_req_t));                                 \
@@ -105,7 +103,8 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
       cmd_pre_dispatch                                                            \
       if (spscq_enqueue(target_shard->cb_queues[shard->shard_id], ctx)) {                   \
         conn->state |= DISPATCH_WAITING;\
-        atomic_store(&target_shard->notify_cb, true);                       \
+        shard->notify_mask |= (1 << target_shard->shard_id);                \
+        LOG_DEBUG_WITH_CTX(shard->shard_id, "dispatched %s to shard %zu notify_mask=%zu", #name, shard_id, shard->notify_mask); \
       } else {\
         write_simple_generic_error(conn, "shard dispatch queue full");\
       }\

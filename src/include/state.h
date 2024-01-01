@@ -26,11 +26,13 @@ typedef struct {
   GRState *gr_state; // back reference to the global state
   vector_Conn_ptr *conns;
   Deque idle_conn_queue;
-  Deque pending_writes_queue;
-  atomic_bool notify_cb;
+  atomic_bool sleeping;
   int queue_efd;
   struct spscq **cb_queues;
   struct hashmap **dbs;
+
+  // max 64 shards allowed (64 threads)
+  uint64_t notify_mask;
 
   ShardStats stats;
 } Shard;
