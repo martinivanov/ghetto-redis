@@ -4,7 +4,7 @@
 #include "state.h"
 #include "hashmap.h"
 #include "kv.h"
-#include "spscq.h"
+#include "mpscq.h"
 
 #define VAR_ARGC (size_t)-1
 
@@ -79,7 +79,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
     __##name##_resp_t *resp_ctx = malloc(sizeof(__##name##_resp_t));                           \
     fill_req_cb_ctx((CBContext *)resp_ctx, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)__cmd_##name##_resp); \
     cmd_post_dispatch_exec                                                       \
-    spscq_enqueue(cb_ctx->src->cb_queues[shard->shard_id], resp_ctx);\
+    mpscq_enqueue(cb_ctx->src->mpscq, resp_ctx);\
     shard->notify_mask |= (1 << cb_ctx->src->shard_id);                   \
   }                                                                       \
   void cmd_##name(Shard *shard, Conn *conn, const CmdArgs *args)          \
@@ -101,7 +101,7 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
       __##name##_req_t *ctx = malloc(sizeof(__##name##_req_t));                                 \
       fill_req_cb_ctx((CBContext *)ctx, shard, target_shard, conn, (dispatch_cb)__cmd_##name##_req); \
       cmd_pre_dispatch                                                            \
-      if (spscq_enqueue(target_shard->cb_queues[shard->shard_id], ctx)) {                   \
+      if (mpscq_enqueue(shard->mpscq, ctx)) {                             \
         conn->state |= DISPATCH_WAITING;\
         shard->notify_mask |= (1 << target_shard->shard_id);                \
         LOG_DEBUG_WITH_CTX(shard->shard_id, "dispatched %s to shard %zu notify_mask=%zu", #name, shard_id, shard->notify_mask); \

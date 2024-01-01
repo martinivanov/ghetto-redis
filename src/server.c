@@ -32,6 +32,7 @@
 #include "include/commands.h"
 #include "include/kv.h"
 #include "include/spscq.h"
+#include "include/mpscq.h"
 
 #define _GNU_SOURCE
 
@@ -69,6 +70,8 @@ void init_shards(GRState *gr_state) {
       shard->cb_queues[j] = spscq_create(NULL, 100000);
     }
 
+    shard->mpscq = mpscq_create(NULL, 100000);
+
     uint64_t seed = get_monotonic_usec(NULL);
     shard->dbs = (struct hashmap **)malloc(sizeof(struct hashmap *) * gr_state->num_dbs);
     for (size_t j = 0; j < gr_state->num_dbs; j++) {
@@ -96,6 +99,7 @@ void free_server_state(GRState *gr_state) {
       spscq_destroy(shard->cb_queues[j]);
     }
     free(shard->cb_queues);
+    free(shard->mpscq);
     close(shard->queue_efd);
   }
   hashmap_free(gr_state->commands);
@@ -315,11 +319,18 @@ bool try_fill_buffer(Shard *shard, Conn *conn, bool io) {
   }
 
   return conn->state & (END | DISPATCH_WAITING);
+  return conn->state & END;
 }
 
 void state_request_epoll(Shard *shard, Conn *conn) {
   LOG_DEBUG_WITH_CTX(shard->shard_id, "state_request_epoll");
   while (try_fill_buffer(shard, conn, true)) {
+  }
+}
+
+void state_request_cb(Shard *shard, Conn *conn) {
+  LOG_DEBUG_WITH_CTX(shard->shard_id, "state_request_epoll");
+  while (try_fill_buffer(shard, conn, false)) {
   }
 }
 
@@ -385,44 +396,68 @@ uint64_t execute_callbacks(Shard *shard) {
   size_t num_shards = shard->gr_state->num_shards;
 
   uint64_t count = 0;
-  for (size_t i = 0; i < num_shards; i++) {
-    if (i == shard->shard_id) {
-      continue;
+  // for (size_t i = 0; i < num_shards; i++) {
+  //   if (i == shard->shard_id) {
+  //     continue;
+  //   }
+
+  //   struct spscq *cb_queue = shard->cb_queues[i];
+  //   while (true) {
+  //     CBContext *ctx = spscq_dequeue(cb_queue);
+  //     if (ctx == NULL) {
+  //       break;
+  //     }
+
+  //     count++;
+
+  //     void *arg = ctx;
+  //     ctx->cb(shard, arg);
+
+  //     free(ctx);
+  //   } 
+  // }
+
+  while (true) {
+    CBContext *ctx = mpscq_dequeue(shard->mpscq);
+    if (ctx == NULL) {
+      break;
     }
 
-    struct spscq *cb_queue = shard->cb_queues[i];
-    while (true) {
-      CBContext *ctx = spscq_dequeue(cb_queue);
-      if (ctx == NULL) {
-        break;
-      }
+    count++;
 
-      count++;
+    void *arg = ctx;
+    ctx->cb(shard, arg);
 
-      void *arg = ctx;
-      ctx->cb(shard, arg);
+    Conn *c = ctx->conn;
+    // We may have a have more requests in the pipeline and were previously blocked due to a dispatched request. 
+    // We check if we are executing on the shard owning the connection and try to process more requests from the pipeline.
+    // TODO: this can probably be done in a nicer way.
+    if (c->shard_id == shard->shard_id) {
+      state_request_cb(shard, c);
+    }
 
-      free(ctx);
-    } 
+    free(ctx);
   }
 
   return count;
 }
 
 bool shard_has_pending_callbacks(Shard *shard) {
-  size_t num_shards = shard->gr_state->num_shards;
-  for (size_t i = 0; i < num_shards; i++) {
-    if (i == shard->shard_id) {
-      continue;
-    }
+  // size_t num_shards = shard->gr_state->num_shards;
+  // for (size_t i = 0; i < num_shards; i++) {
+  //   if (i == shard->shard_id) {
+  //     continue;
+  //   }
 
-    struct spscq *cb_queue = shard->cb_queues[i];
-    if (!spscq_is_empty(cb_queue)) {
-      return true;
-    }
-  }
+  //   struct spscq *cb_queue = shard->cb_queues[i];
+  //   if (!spscq_is_empty(cb_queue)) {
+  //     return true;
+  //   }
+  // }
 
-  return false;
+  size_t count = mpscq_count(shard->mpscq);
+
+  return count > 0;
 }
 
 int pin_shard_to_cpu(Shard *shard) {
@@ -568,11 +603,12 @@ void run_loop(void *arg) {
         }
 
         if (conn->state == END || ev.events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
-          LOG_INFO("cloging fd=%d", fd);
+          LOG_INFO("cloсing fd=%d", fd);
           epoll_unregister(fd_epoll, fd);
           conn_done(shard, conn);
         } else {
           if (conn->state & BLOCKED) {
+            LOG_WARN("conn->state & BLOCKED");
             conn->state &= ~BLOCKED;
             epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
           }
@@ -581,6 +617,20 @@ void run_loop(void *arg) {
     }
 
     timeout = 1000; //close_idle_connections(shard);
+
+    for (size_t i = 0; i < capacity_vector_Conn_ptr(shard->conns); i++) {
+      Conn *conn = shard->conns->array[i];
+      if (conn) {
+        if (conn->state & DISPATCH_WAITING) {
+          LOG_ERROR("shard=%d fd=%d conn->state & DISPATCH_WAITING", shard->shard_id, conn->fd);
+        }
+
+        size_t remaining = conn->send_buf_size - conn->send_buf_sent;
+        if (remaining > 0) {
+          LOG_ERROR("shard=%d fd=%d conn->remaining > 0", shard->shard_id, conn->fd);
+        }
+      }
+    }
   }
 
   shard->stats = (ShardStats){

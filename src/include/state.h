@@ -29,6 +29,7 @@ typedef struct {
   atomic_bool sleeping;
   int queue_efd;
   struct spscq **cb_queues;
+  struct mpscq *mpscq;
   struct hashmap **dbs;
 
   // max 64 shards allowed (64 threads)
