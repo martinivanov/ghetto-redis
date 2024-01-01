@@ -136,12 +136,22 @@ DEFINE_COMMAND(
   CMD_PRE_DISPATCH_EXEC(),
   CMD_POST_DISPATCH_EXEC(
     free(keyed_ctx->key);
-    resp_ctx->entry = entry;
+    if (entry) {
+      Entry *copy = (Entry *)malloc(sizeof(Entry));
+      memcpy(copy, entry, sizeof(Entry));
+      resp_ctx->entry = copy;
+    } else {
+      resp_ctx->entry = NULL;
+    }
   ),
   CMD_PRE_RESP(
    Entry *entry = ctx->entry; 
   ),
-  CMD_POST_RESP()
+  CMD_POST_RESP(
+    if (entry) {
+      free(entry);
+    }
+  )
 )
 
 DEFINE_COMMAND(
