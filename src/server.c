@@ -80,7 +80,7 @@ void init_shards(GRState *gr_state) {
 
     shard->gr_state = gr_state;
 
-    shard->notify_mask = 0;
+    shard->soft_notify = 0;
 
     shard->stats = (ShardStats){0};
   }
@@ -475,10 +475,9 @@ int pin_shard_to_cpu(Shard *shard) {
 
 bool wakeup_pending_shards(Shard *shard) {
   int num_shards = shard->gr_state->num_shards;
-  uint64_t mask = shard->notify_mask;
   bool notifed = false;
   for (int i = 0; i < num_shards; i++) {
-    if (mask & (1 << i)) {
+    if (BITSET64_GET(shard->soft_notify, i)) {
       Shard *s = &shard->gr_state->shards[i];
       if (atomic_exchange(&s->sleeping, false)) {
         write(s->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
@@ -487,7 +486,7 @@ bool wakeup_pending_shards(Shard *shard) {
   }
 
   // reset the mask
-  shard->notify_mask = 0;
+  BITSET64_RESET(shard->soft_notify);
 
   return notifed;
 }

@@ -9,6 +9,7 @@
 #include "hashmap.h"
 #include "vector_types.h"
 #include "spscq.h"
+#include "bitset.h"
 
 typedef struct GRState GRState;
 
@@ -33,7 +34,7 @@ typedef struct {
   struct hashmap **dbs;
 
   // max 64 shards allowed (64 threads)
-  uint64_t notify_mask;
+  bitset64 soft_notify;
 
   ShardStats stats;
 } Shard;
