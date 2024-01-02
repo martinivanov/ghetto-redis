@@ -137,9 +137,20 @@ DEFINE_COMMAND(
   CMD_POST_DISPATCH_EXEC(
     free(keyed_ctx->key);
     if (entry) {
-      Entry *copy = (Entry *)malloc(sizeof(Entry));
-      memcpy(copy, entry, sizeof(Entry));
-      resp_ctx->entry = copy;
+      // We need to copy the whole entry because overwriting entries during SET frees the old entry and
+      // we may have a dispatched GET response that may try to dereference the freed old entry.
+      // This slows down GETs but it's the simplest solution for now.
+      // TODO: use RCU, reference counting or something else to avoid copying the whole entry
+      uint8_t *key_copy = (uint8_t *)malloc(entry->keylen);
+      memcpy(key_copy, entry->key, entry->keylen);
+
+      uint8_t *val_copy = (uint8_t *)malloc(entry->vallen);
+      memcpy(val_copy, entry->val, entry->vallen);
+
+      Entry *copy = ENTRY_INIT(key_copy, entry->keylen, val_copy, entry->vallen);
+
+      resp_ctx->entry = (Entry *)malloc(sizeof(Entry));
+      memcpy(resp_ctx->entry, copy, sizeof(Entry));
     } else {
       resp_ctx->entry = NULL;
     }
@@ -149,6 +160,8 @@ DEFINE_COMMAND(
   ),
   CMD_POST_RESP(
     if (entry) {
+      free((void *)entry->key);
+      free((void *)entry->val);
       free(entry);
     }
   )

@@ -615,7 +615,7 @@ void run_loop(void *arg) {
       }
     }
 
-    timeout = 1000; //close_idle_connections(shard);
+    timeout = close_idle_connections(shard);
 
     for (size_t i = 0; i < capacity_vector_Conn_ptr(shard->conns); i++) {
       Conn *conn = shard->conns->array[i];
