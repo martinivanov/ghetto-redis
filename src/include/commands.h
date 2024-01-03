@@ -9,8 +9,8 @@
 
 #define VAR_ARGC (size_t)-1
 
-typedef void (*command_func)(Shard *shard, Conn* conn, const CmdArgs* args);
-typedef void (*dispatch_cb)(Shard *shard, void *ctx);
+typedef void (*command_func)(GRContext *context, Conn* conn, const CmdArgs* args);
+typedef void (*dispatch_cb)(GRContext *context, void *ctx);
 
 #define ALLOW_INLINE_EXEC 1
 
@@ -80,8 +80,8 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
     __##name##_resp_t *resp_ctx = malloc(sizeof(__##name##_resp_t));                           \
     fill_req_cb_ctx((CBContext *)resp_ctx, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)__cmd_##name##_resp); \
     cmd_post_dispatch_exec                                                       \
-    mpscq_enqueue(cb_ctx->src->mpscq, resp_ctx);\
-    BITSET64_SET(shard->soft_notify, shard->shard_id);                    \
+    mpscq_enqueue(cb_ctx->src->reactor.cb_queue, resp_ctx);\
+    BITSET64_SET(shard->reactor.soft_notify, shard->shard_id);                    \
   }                                                                       \
   void cmd_##name(Shard *shard, Conn *conn, const CmdArgs *args)          \
   {                                                                       \
@@ -102,10 +102,9 @@ typedef void (*dispatch_cb)(Shard *shard, void *ctx);
       __##name##_req_t *ctx = malloc(sizeof(__##name##_req_t));                                 \
       fill_req_cb_ctx((CBContext *)ctx, shard, target_shard, conn, (dispatch_cb)__cmd_##name##_req); \
       cmd_pre_dispatch                                                            \
-      if (mpscq_enqueue(shard->mpscq, ctx)) {                             \
+      if (mpscq_enqueue(shard->reactor.cb_queue, ctx)) {                             \
         conn->state |= DISPATCH_WAITING;\
-        BITSET64_SET(shard->soft_notify, target_shard->shard_id);                \
-        LOG_DEBUG_WITH_CTX(shard->shard_id, "dispatched %s to shard %zu soft_notify=%zu", #name, shard_id, shard->soft_notify); \
+        BITSET64_SET(shard->reactor.soft_notify, target_shard->shard_id);                \
       } else {\
         write_simple_generic_error(conn, "shard dispatch queue full");\
       }\
@@ -139,22 +138,22 @@ void register_command(struct hashmap* commands, const char* name, size_t arity, 
 
 const Command* lookup_command(CmdArgs *CmdArgs, struct hashmap* commands);
 
-void cmd_ping(Shard *shard, Conn *conn, const CmdArgs *args);
-void cmd_echo(Shard *shard, Conn *conn, const CmdArgs *args);
-void cmd_quit(Shard *shard, Conn *conn, const CmdArgs *args);
-void cmd_get(Shard *shard, Conn *conn, const CmdArgs *args);
-void cmd_set(Shard *shard, Conn *conn, const CmdArgs *args);
-void cmd_del(Shard *shard, Conn *conn, const CmdArgs *args);
-void cmd_shutdown(Shard *shard, Conn *conn, const CmdArgs *args);
-void cmd_flushall(Shard *shard, Conn *conn, const CmdArgs *args);
-void cmd_select(Shard *shard, Conn *conn, const CmdArgs *args);
-void cmd_incr(Shard *shard, Conn *conn, const CmdArgs *args);
-void cmd_decr(Shard *shard, Conn *conn, const CmdArgs *args);
-void cmd_incrby(Shard *shard, Conn *conn, const CmdArgs *args);
-void cmd_decrby(Shard *shard, Conn *conn, const CmdArgs *args);
-void cmd_clients(Shard *shard, Conn *conn, const CmdArgs *args);
-void cmd_mget(Shard *shard, Conn *conn, const CmdArgs *args);
-void cmd_mset(Shard *shard, Conn *conn, const CmdArgs *args);
-void cmd_dispatch_ping(Shard *shard, Conn *conn, const CmdArgs *args);
+void cmd_ping(GRContext *context, Conn *conn, const CmdArgs *args);
+void cmd_echo(GRContext *context, Conn *conn, const CmdArgs *args);
+void cmd_quit(GRContext *context, Conn *conn, const CmdArgs *args);
+void cmd_get(GRContext *context, Conn *conn, const CmdArgs *args);
+void cmd_set(GRContext *context, Conn *conn, const CmdArgs *args);
+void cmd_del(GRContext *context, Conn *conn, const CmdArgs *args);
+void cmd_shutdown(GRContext *context, Conn *conn, const CmdArgs *args);
+void cmd_flushall(GRContext *context, Conn *conn, const CmdArgs *args);
+void cmd_select(GRContext *context, Conn *conn, const CmdArgs *args);
+void cmd_incr(GRContext *context, Conn *conn, const CmdArgs *args);
+void cmd_decr(GRContext *context, Conn *conn, const CmdArgs *args);
+void cmd_incrby(GRContext *context, Conn *conn, const CmdArgs *args);
+void cmd_decrby(GRContext *context, Conn *conn, const CmdArgs *args);
+void cmd_clients(GRContext *context, Conn *conn, const CmdArgs *args);
+void cmd_mget(GRContext *context, Conn *conn, const CmdArgs *args);
+void cmd_mset(GRContext *context, Conn *conn, const CmdArgs *args);
+void cmd_dispatch_ping(GRContext *context, Conn *conn, const CmdArgs *args);
 
 #endif

@@ -10,6 +10,12 @@
         "bitset": "c",
         "vector": "c",
         "memory": "c",
-        "system_error": "c"
+        "system_error": "c",
+        "epoll.h": "c",
+        "types.h": "c",
+        "stdatomic.h": "c",
+        "unistd.h": "c",
+        "eventfd.h": "c",
+        "state.h": "c"
     }
 }
