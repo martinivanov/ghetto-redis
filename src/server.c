@@ -139,7 +139,7 @@ void handle_command(GRContext *context, Conn *conn, CmdArgs *args) {
              "unknown command '%.*s', with args beginning with: '%.*s'",
              (int)cmd_name_len, cmd_name, (int)first_arg_len, first_arg);
     write_simple_generic_error(conn, message);
-    flush_response_buffer(conn);
+    reactor_epoll_flush(conn);
     return;
   }
 
@@ -147,14 +147,14 @@ void handle_command(GRContext *context, Conn *conn, CmdArgs *args) {
     char message[64];
     snprintf(message, sizeof(message), "wrong number of arguments for '%.*s' command", (int)cmd->name_len, cmd->name);
     write_simple_generic_error(conn, message);
-    flush_response_buffer(conn);
+    reactor_epoll_flush(conn);
     return;
   }
 
   cmd->func(context, conn, args);
 
   if (!(conn->state & DISPATCH_WAITING)) {
-    flush_response_buffer(conn);
+    reactor_epoll_flush(conn);
   }
 }
 

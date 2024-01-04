@@ -6,6 +6,7 @@
 #include "kv.h"
 #include "mpscq.h"
 #include "bitset.h"
+#include "reactor.h"
 
 #define VAR_ARGC (size_t)-1
 
@@ -70,7 +71,7 @@ typedef void (*dispatch_cb)(GRContext *context, void *ctx);
     cmd_resp                                                              \
     cmd_post_resp                                                         \
     conn->state &= ~DISPATCH_WAITING;                                     \
-    flush_response_buffer(conn);                                          \
+    reactor_epoll_flush(conn);                                          \
   }\
   void __cmd_##name##_req(GRContext *context, __##name##_req_t *ctx)                       \
   {                                                                       \
