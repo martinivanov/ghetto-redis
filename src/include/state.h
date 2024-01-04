@@ -28,7 +28,7 @@ typedef struct {
   size_t num_dbs;
   struct hashmap *commands;
   Shard *shard;
-  ShardSet shard_set;
+  ShardSet *shard_set;
 } GRContext;
 
 #endif

@@ -59,8 +59,11 @@ typedef void (*dispatch_cb)(GRContext *context, void *ctx);
     resp_t                                                                \
   } __##name##_resp_t;                                                    \
   \
-  void __cmd_##name##_resp(Shard *shard, __##name##_resp_t *ctx)                    \
+  void __cmd_##name##_resp(GRContext *context, __##name##_resp_t *ctx)                    \
   {                                                                       \
+    ShardSet *shard_set = context->shard_set;                            \
+    Shard *shard = context->shard;                                      \
+    Reactor *reactor = shard->reactor;                                    \
     CBContext *cb_ctx = (CBContext *)ctx;                                \
     Conn *conn = cb_ctx->conn;                                            \
     cmd_pre_resp                                                           \
@@ -69,8 +72,11 @@ typedef void (*dispatch_cb)(GRContext *context, void *ctx);
     conn->state &= ~DISPATCH_WAITING;                                     \
     flush_response_buffer(conn);                                          \
   }\
-  void __cmd_##name##_req(Shard *shard, __##name##_req_t *ctx)                       \
+  void __cmd_##name##_req(GRContext *context, __##name##_req_t *ctx)                       \
   {                                                                       \
+    ShardSet *shard_set = context->shard_set;                            \
+    Shard *shard = context->shard;                                      \
+    Reactor *reactor = shard->reactor;                                    \
     CBContext *cb_ctx = (CBContext *)ctx;                                 \
     Conn *conn = (Conn *)cb_ctx->conn;                                    \
     struct hashmap *db = shard->dbs[conn->db];                        \
@@ -80,16 +86,20 @@ typedef void (*dispatch_cb)(GRContext *context, void *ctx);
     __##name##_resp_t *resp_ctx = malloc(sizeof(__##name##_resp_t));                           \
     fill_req_cb_ctx((CBContext *)resp_ctx, cb_ctx->dst, cb_ctx->src, cb_ctx->conn, (dispatch_cb)__cmd_##name##_resp); \
     cmd_post_dispatch_exec                                                       \
-    mpscq_enqueue(cb_ctx->src->reactor.cb_queue, resp_ctx);\
-    BITSET64_SET(shard->reactor.soft_notify, shard->shard_id);                    \
+    Shard *target_shard = cb_ctx->src;                                    \
+    Reactor *target_reactor = target_shard->reactor;                      \
+    mpscq_enqueue(target_reactor->cb_queue, resp_ctx);\
+    BITSET64_SET(reactor->soft_notify, target_reactor->id);                    \
   }                                                                       \
-  void cmd_##name(Shard *shard, Conn *conn, const CmdArgs *args)          \
+  void cmd_##name(GRContext *context, Conn *conn, const CmdArgs *args)          \
   {                                                                       \
-    const GRState *gr_state = shard->gr_state;                            \
+    ShardSet *shard_set = context->shard_set;                            \
+    Shard *shard = context->shard;                                      \
+    Reactor *reactor = shard->reactor;                                    \
     const uint8_t *key_buf_ptr = args->buf + args->offsets[1];                    \
     const size_t keylen = args->lens[1];                                  \
     const uint64_t hash = hashmap_xxhash3(key_buf_ptr, keylen, 0, 0);             \
-    const size_t shard_id = hash % gr_state->num_shards;                  \
+    const size_t shard_id = hash % shard_set->size;                  \
     LOG_DEBUG_WITH_CTX(shard->shard_id, "dispatching %s to shard %zu", #name, shard_id); \
     cmd_vars                                                              \
     if (ALLOW_INLINE_EXEC && shard_id == shard->shard_id) {                                    \
@@ -98,13 +108,14 @@ typedef void (*dispatch_cb)(GRContext *context, void *ctx);
       cmd_exec                                                           \
       cmd_resp                                                           \
     } else {                                                              \
-      Shard *target_shard = &gr_state->shards[shard_id];                   \
+      Shard *target_shard = &shard_set->shards[shard_id];                   \
+      Reactor *target_reactor = target_shard->reactor;                     \
       __##name##_req_t *ctx = malloc(sizeof(__##name##_req_t));                                 \
       fill_req_cb_ctx((CBContext *)ctx, shard, target_shard, conn, (dispatch_cb)__cmd_##name##_req); \
       cmd_pre_dispatch                                                            \
-      if (mpscq_enqueue(shard->reactor.cb_queue, ctx)) {                             \
+      if (mpscq_enqueue(target_reactor->cb_queue, ctx)) {                             \
         conn->state |= DISPATCH_WAITING;\
-        BITSET64_SET(shard->reactor.soft_notify, target_shard->shard_id);                \
+        BITSET64_SET(reactor->soft_notify, target_reactor->id);                \
       } else {\
         write_simple_generic_error(conn, "shard dispatch queue full");\
       }\

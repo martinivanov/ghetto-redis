@@ -46,8 +46,21 @@ static uint64_t get_monotonic_usec() {
   return tv.tv_sec * 1000000 + tv.tv_nsec / 1000;
 }
 
-void on_cb(Reactor *reactor, void *arg) {
-  LOG_DEBUG("on_cb()");
+void on_cb(GRContext *context, void *arg) {
+  Shard *shard = context->shard;
+  Reactor *reactor = shard->reactor;
+
+  CBContext *ctx = arg;
+  ctx->cb(context, arg);
+
+  Conn *c = ctx->conn;
+  // We may have a have more requests in the pipeline and were previously blocked due to a dispatched request. 
+  // We check if we are executing on the shard owning the connection and try to process more requests from the pipeline.
+  // TODO: this can probably be done in a nicer way.
+  if (c->shard_id == reactor->id) {
+    while (reactor->on_data_available(context, c)) {
+    }
+  }
 }
 
 void conn_put(vector_Conn_ptr *conns, Conn *conn, size_t shard_id) {
@@ -112,7 +125,7 @@ void on_accept(Reactor *reactor, struct sockaddr_in client_addr, int client_fd) 
   // deque_push_back_and_attach(shard->idle_conn_queue, client, Conn, idle_conn_queue_node);
 }
 
-void handle_command(Shard *shard, Conn *conn, GRContext *context, CmdArgs *args) {
+void handle_command(GRContext *context, Conn *conn, CmdArgs *args) {
   const Command *cmd = lookup_command(args, context->commands);
   
   if (cmd == NULL) {
@@ -138,7 +151,7 @@ void handle_command(Shard *shard, Conn *conn, GRContext *context, CmdArgs *args)
     return;
   }
 
-  cmd->func(shard, conn, args);
+  cmd->func(context, conn, args);
 
   if (!(conn->state & DISPATCH_WAITING)) {
     flush_response_buffer(conn);
@@ -186,7 +199,7 @@ bool on_data_available(GRContext *context, Conn *conn) {
 #endif
 
   if (likely(args.argc > 0)) {
-    handle_command(shard, conn, context, &args);
+    handle_command(context, conn, &args);
   }
 
   if (unlikely(conn->state == END)) {
@@ -439,7 +452,7 @@ void run_loop(void *arg) {
   reactor_run(reactor, context);
 }
 
-const size_t NUM_THREADS = 1;
+const size_t NUM_THREADS = 4;
 
 int main() {
   Shard shards[NUM_THREADS];
@@ -462,7 +475,7 @@ int main() {
       .num_dbs = 16,
       .commands = commands,
       .shard = &shards[i],
-      .shard_set = shard_set,
+      .shard_set = &shard_set,
     };
   }
 

@@ -64,7 +64,7 @@ void reactor_init(
 ) {
     reactor->id = id;
     reactor->running = true;
-    reactor->cb_queue = mpscq_create(NULL, 1024);
+    reactor->cb_queue = mpscq_create(NULL, 10000);
     reactor->sleeping = false;
     reactor->soft_notify = 0;
 
@@ -241,11 +241,12 @@ void reactor_run(Reactor *reactor, GRContext *context) {
 
 bool reactor_wakeup_pending(Reactor *reactor, GRContext *context) {
   bool notifed = false;
-  size_t shard_count = context->shard_set.size;
-  ShardSet *shard_set = &context->shard_set;
+  size_t shard_count = context->shard_set->size;
+  ShardSet *shard_set = context->shard_set;
   for (int i = 0; i < shard_count; i++) {
     if (BITSET64_GET(reactor->soft_notify, i)) {
-      Reactor *r = &shard_set->shards[i].reactor;
+      Shard *shard = &shard_set->shards[i];
+      Reactor *r = shard->reactor;
       if (atomic_exchange(&r->sleeping, false)) {
         write(r->wakeup_fd, &(uint64_t){1}, sizeof(uint64_t));
       }
@@ -269,18 +270,7 @@ uint64_t reactor_poll_callbacks(Reactor *reactor, GRContext *context) {
 
     count++;
 
-    // void *arg = ctx;
-    // ctx->cb(reactor, arg);
-
-    // Conn *c = ctx->conn;
-    // // We may have a have more requests in the pipeline and were previously blocked due to a dispatched request. 
-    // // We check if we are executing on the shard owning the connection and try to process more requests from the pipeline.
-    // // TODO: this can probably be done in a nicer way.
-    // if (c->shard_id == reactor->id) {
-    //   state_request_cb(reactor, c);
-    // }
-
-    reactor->on_cb(reactor, ctx);
+    reactor->on_cb(context, ctx);
 
     free(ctx);
   }

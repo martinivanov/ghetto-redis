@@ -10,6 +10,7 @@
 #include "state.h"
 #include "protocol.h"
 #include "kv.h"
+#include "reactor.h"
 
 inline const Command* lookup_command(CmdArgs *CmdArgs, struct hashmap* commands) {
   Command *cmd = &(Command) {
@@ -47,12 +48,12 @@ struct hashmap* init_commands() {
   register_command(commands, "PING", 0, cmd_ping);
   register_command(commands, "ECHO", 1, cmd_echo);
   register_command(commands, "QUIT", 0, cmd_quit);
-  // register_command(commands, "GET", 1, cmd_get);
-  // register_command(commands, "SET", 2, cmd_set);
-  // register_command(commands, "DEL", 1, cmd_del);
-  // register_command(commands, "SHUTDOWN", 0, cmd_shutdown);
-  // register_command(commands, "FLUSHALL", 0, cmd_flushall);
-  // register_command(commands, "SELECT", 1, cmd_select);
+  register_command(commands, "GET", 1, cmd_get);
+  register_command(commands, "SET", 2, cmd_set);
+  register_command(commands, "DEL", 1, cmd_del);
+  register_command(commands, "SHUTDOWN", 0, cmd_shutdown);
+  register_command(commands, "FLUSHALL", 0, cmd_flushall);
+  register_command(commands, "SELECT", 1, cmd_select);
   // register_command(commands, "INCR", 1, cmd_incr);
   // register_command(commands, "DECR", 1, cmd_decr);
   // register_command(commands, "INCRBY", 2, cmd_incrby);
@@ -60,7 +61,7 @@ struct hashmap* init_commands() {
   // register_command(commands, "CLIENTS", 0, cmd_clients);
   // register_command(commands, "MGET", VAR_ARGC, cmd_mget);
   // register_command(commands, "MSET", VAR_ARGC, cmd_mset);
-  // register_command(commands, "DPING", 1, cmd_dispatch_ping);
+  register_command(commands, "DPING", 1, cmd_dispatch_ping);
 
   return commands;
 }
@@ -107,198 +108,199 @@ void cmd_quit(GRContext *context, Conn *conn, const CmdArgs *args) {
     write_simple_string(conn, "OK", 2);
 }
 
-// DEFINE_COMMAND(
-//   get, 
-//   KEYED_REQ_CTX(), 
-//   RESP_CTX(
-//     Entry *entry;
-//   ),
-//   CMD_VARS(
-//     uint8_t *key = key_buf_ptr;
-//   ),
-//   CMD_PRE_INLINE_EXEC(),
-//   CMD_EXEC(
-//     Entry *entry = (Entry *)hashmap_get_with_hash(db, &(Entry){.key = key, .keylen = keylen}, hash);
-//   ),
-//   CMD_RESP(
-//     if (entry) {
-//       write_bulk_string(conn, entry->val, entry->vallen);
-//     } else {
-//       write_null_bulk_string(conn);
-//     }
-//   ),
-//   CMD_PRE_DISPATCH(
-//     ctx->ctx.key = malloc(keylen);
-//     memcpy(ctx->ctx.key, key, keylen);
-//     ctx->ctx.keylen = keylen;
-//     ctx->ctx.hash = hash; 
-//   ),
-//   CMD_PRE_DISPATCH_EXEC(),
-//   CMD_POST_DISPATCH_EXEC(
-//     free(keyed_ctx->key);
-//     if (entry) {
-//       // We need to copy the whole entry because overwriting entries during SET frees the old entry and
-//       // we may have a dispatched GET response that may try to dereference the freed old entry.
-//       // This slows down GETs but it's the simplest solution for now.
-//       // TODO: use RCU, reference counting or something else to avoid copying the whole entry
-//       uint8_t *key_copy = (uint8_t *)malloc(entry->keylen);
-//       memcpy(key_copy, entry->key, entry->keylen);
+DEFINE_COMMAND(
+  get, 
+  KEYED_REQ_CTX(), 
+  RESP_CTX(
+    Entry *entry;
+  ),
+  CMD_VARS(
+    uint8_t *key = key_buf_ptr;
+  ),
+  CMD_PRE_INLINE_EXEC(),
+  CMD_EXEC(
+    Entry *entry = (Entry *)hashmap_get_with_hash(db, &(Entry){.key = key, .keylen = keylen}, hash);
+  ),
+  CMD_RESP(
+    if (entry) {
+      write_bulk_string(conn, entry->val, entry->vallen);
+    } else {
+      write_null_bulk_string(conn);
+    }
+  ),
+  CMD_PRE_DISPATCH(
+    ctx->ctx.key = malloc(keylen);
+    memcpy(ctx->ctx.key, key, keylen);
+    ctx->ctx.keylen = keylen;
+    ctx->ctx.hash = hash; 
+  ),
+  CMD_PRE_DISPATCH_EXEC(),
+  CMD_POST_DISPATCH_EXEC(
+    free(keyed_ctx->key);
+    if (entry) {
+      // We need to copy the whole entry because overwriting entries during SET frees the old entry and
+      // we may have a dispatched GET response that may try to dereference the freed old entry.
+      // This slows down GETs but it's the simplest solution for now.
+      // TODO: use RCU, reference counting or something else to avoid copying the whole entry
+      uint8_t *key_copy = (uint8_t *)malloc(entry->keylen);
+      memcpy(key_copy, entry->key, entry->keylen);
 
-//       uint8_t *val_copy = (uint8_t *)malloc(entry->vallen);
-//       memcpy(val_copy, entry->val, entry->vallen);
+      uint8_t *val_copy = (uint8_t *)malloc(entry->vallen);
+      memcpy(val_copy, entry->val, entry->vallen);
 
-//       Entry *copy = ENTRY_INIT(key_copy, entry->keylen, val_copy, entry->vallen);
+      Entry *copy = ENTRY_INIT(key_copy, entry->keylen, val_copy, entry->vallen);
 
-//       resp_ctx->entry = (Entry *)malloc(sizeof(Entry));
-//       memcpy(resp_ctx->entry, copy, sizeof(Entry));
-//     } else {
-//       resp_ctx->entry = NULL;
-//     }
-//   ),
-//   CMD_PRE_RESP(
-//    Entry *entry = ctx->entry; 
-//   ),
-//   CMD_POST_RESP(
-//     if (entry) {
-//       free((void *)entry->key);
-//       free((void *)entry->val);
-//       free(entry);
-//     }
-//   )
-// )
+      resp_ctx->entry = (Entry *)malloc(sizeof(Entry));
+      memcpy(resp_ctx->entry, copy, sizeof(Entry));
+    } else {
+      resp_ctx->entry = NULL;
+    }
+  ),
+  CMD_PRE_RESP(
+   Entry *entry = ctx->entry; 
+  ),
+  CMD_POST_RESP(
+    if (entry) {
+      free((void *)entry->key);
+      free((void *)entry->val);
+      free(entry);
+    }
+  )
+)
 
-// DEFINE_COMMAND(
-//   set, 
-//   KEYED_REQ_CTX(
-//     uint8_t *val;
-//     size_t vallen;
-//   ), 
-//   RESP_CTX(),
-//   CMD_VARS(
-//     uint8_t *key = malloc(keylen);
-//     memcpy(key, key_buf_ptr, keylen);
+DEFINE_COMMAND(
+  set, 
+  KEYED_REQ_CTX(
+    uint8_t *val;
+    size_t vallen;
+  ), 
+  RESP_CTX(),
+  CMD_VARS(
+    uint8_t *key = malloc(keylen);
+    memcpy(key, key_buf_ptr, keylen);
     
-//     size_t vallen = args->lens[2];
-//     uint8_t *val = (uint8_t *)malloc(vallen); 
-//     memcpy((void *)val, args->buf + args->offsets[2], vallen);
-//   ),
-//   CMD_PRE_INLINE_EXEC(),
-//   CMD_EXEC(
-//     Entry *entry = ENTRY_INIT(key, keylen, val, vallen);
-//     Entry *existing = (Entry *)hashmap_set_with_hash(db, entry, hash);
-//     if (existing) {
-//       entry_free((void*)existing);
-//     }
-//   ),
-//   CMD_RESP(
-//     write_simple_string(conn, "OK", 2);
-//   ),
-//   CMD_PRE_DISPATCH(
-//     ctx->ctx.key = (uint8_t *)key;
-//     ctx->ctx.keylen = (size_t)keylen;
-//     ctx->ctx.hash = (size_t)hash;
-//     ctx->val = (uint8_t *)val;
-//     ctx->vallen = (size_t)vallen;
-//   ),
-//   CMD_PRE_DISPATCH_EXEC(
-//     size_t vallen = ctx->vallen;
-//     uint8_t *val = ctx->val;
-//   ),
-//   CMD_POST_DISPATCH_EXEC(),
-//   CMD_PRE_RESP(),
-//   CMD_POST_RESP()
-// )
+    size_t vallen = args->lens[2];
+    uint8_t *val = (uint8_t *)malloc(vallen); 
+    memcpy((void *)val, args->buf + args->offsets[2], vallen);
+  ),
+  CMD_PRE_INLINE_EXEC(),
+  CMD_EXEC(
+    Entry *entry = ENTRY_INIT(key, keylen, val, vallen);
+    Entry *existing = (Entry *)hashmap_set_with_hash(db, entry, hash);
+    if (existing) {
+      entry_free((void*)existing);
+    }
+  ),
+  CMD_RESP(
+    write_simple_string(conn, "OK", 2);
+  ),
+  CMD_PRE_DISPATCH(
+    ctx->ctx.key = (uint8_t *)key;
+    ctx->ctx.keylen = (size_t)keylen;
+    ctx->ctx.hash = (size_t)hash;
+    ctx->val = (uint8_t *)val;
+    ctx->vallen = (size_t)vallen;
+  ),
+  CMD_PRE_DISPATCH_EXEC(
+    size_t vallen = ctx->vallen;
+    uint8_t *val = ctx->val;
+  ),
+  CMD_POST_DISPATCH_EXEC(),
+  CMD_PRE_RESP(),
+  CMD_POST_RESP()
+)
 
-// DEFINE_COMMAND(
-//   del, 
-//   KEYED_REQ_CTX(), 
-//   RESP_CTX(
-//     uint64_t res;
-//   ),
-//   CMD_VARS(
-//     uint8_t *key = key_buf_ptr;
-//   ),
-//   CMD_PRE_INLINE_EXEC(),
-//   CMD_EXEC(
-//     const void *entry = hashmap_delete_with_hash(db, &(Entry){.key = key, .keylen = keylen}, hash);
-//     uint64_t res = 0;
-//     if (entry) {
-//       entry_free((void*)entry);
-//       res = 1;
-//     } 
-//   ),
-//   CMD_RESP(
-//     write_integer(conn, res);
-//   ),
-//   CMD_PRE_DISPATCH(
-//     ctx->ctx.key = malloc(keylen);
-//     memcpy(ctx->ctx.key, key, keylen);
-//     ctx->ctx.keylen = keylen;
-//     ctx->ctx.hash = hash;
-//   ),
-//   CMD_PRE_DISPATCH_EXEC(),
-//   CMD_POST_DISPATCH_EXEC(
-//     free(keyed_ctx->key);
-//     resp_ctx->res = res;
-//   ),
-//   CMD_PRE_RESP(
-//     uint64_t res = ctx->res;
-//   ),
-//   CMD_POST_RESP()
-// )
+DEFINE_COMMAND(
+  del, 
+  KEYED_REQ_CTX(), 
+  RESP_CTX(
+    uint64_t res;
+  ),
+  CMD_VARS(
+    uint8_t *key = key_buf_ptr;
+  ),
+  CMD_PRE_INLINE_EXEC(),
+  CMD_EXEC(
+    const void *entry = hashmap_delete_with_hash(db, &(Entry){.key = key, .keylen = keylen}, hash);
+    uint64_t res = 0;
+    if (entry) {
+      entry_free((void*)entry);
+      res = 1;
+    } 
+  ),
+  CMD_RESP(
+    write_integer(conn, res);
+  ),
+  CMD_PRE_DISPATCH(
+    ctx->ctx.key = malloc(keylen);
+    memcpy(ctx->ctx.key, key, keylen);
+    ctx->ctx.keylen = keylen;
+    ctx->ctx.hash = hash;
+  ),
+  CMD_PRE_DISPATCH_EXEC(),
+  CMD_POST_DISPATCH_EXEC(
+    free(keyed_ctx->key);
+    resp_ctx->res = res;
+  ),
+  CMD_PRE_RESP(
+    uint64_t res = ctx->res;
+  ),
+  CMD_POST_RESP()
+)
 
-// void cmd_shutdown(Shard *shard, Conn *conn, const CmdArgs *args) {
-//   (void)conn;
-//   (void)args;
-//   GRState *gr_state = shard->gr_state;
-//   gr_state->running = false;
-//   for (size_t i = 0; i < gr_state->num_shards; i++) {
-//     Shard *s = &gr_state->shards[i];
-//     write(s->reactor.wakeup_fd, &(uint64_t){1}, sizeof(uint64_t));
-//   }
-// }
+void cmd_shutdown(GRContext *context, Conn *conn, const CmdArgs *args) {
+  (void)conn;
+  (void)args;
+  ShardSet *shard_set = context->shard_set;
+  for (size_t i = 0; i < shard_set->size; i++) {
+    Shard *shard = &shard_set->shards[i];
+    Reactor *reactor = shard->reactor;
+    reactor->running = false;
+    BITSET64_SET(reactor->soft_notify, i);
+  }
+}
 
-// void cmd_flushall(Shard *shard, Conn *conn, const CmdArgs *args) {
-//   (void)args;
+void cmd_flushall(GRContext *context, Conn *conn, const CmdArgs *args) {
+  (void)args;
+  ShardSet *shard_set = context->shard_set;
 
-//   GRState *gr_state = shard->gr_state;
-//   for (size_t i = 0; i < gr_state->num_dbs; i++) {
-//     struct hashmap *db = shard->dbs[i];
-//     hashmap_clear(db, true);
-//   }
+  for (size_t i = 0; i < shard_set->size; i++) {
+    Shard *shard = &shard_set->shards[i];
+    for (size_t j = 0; j < context->num_dbs; j++) {
+      struct hashmap *db = shard->dbs[j];
+      hashmap_clear(db, true);
+    }
+  }
 
-//   write_simple_string(conn, "OK", 2);
-// }
+  write_simple_string(conn, "OK", 2);
+}
 
-// void cmd_select(Shard *shard, Conn *conn, const CmdArgs *args) {
-//   (void)shard;
+void cmd_select(GRContext *context, Conn *conn, const CmdArgs *args) {
+  const uint8_t *cmd = args->buf + args->offsets[0];
+  const uint8_t *db = &cmd[args->offsets[1]];
+  const size_t dblen = args->lens[1];
 
-//   const uint8_t *cmd = args->buf + args->offsets[0];
-//   const uint8_t *db = &cmd[args->offsets[1]];
-//   const size_t dblen = args->lens[1];
+  char* tmp = (char*)malloc(dblen + 1);
+  memcpy(tmp, db, dblen);
+  tmp[dblen] = '\0';
 
-//   char* tmp = (char*)malloc(dblen + 1);
-//   memcpy(tmp, db, dblen);
-//   tmp[dblen] = '\0';
+  char *endptr;
+  uint64_t dbnum = strtoull(tmp, &endptr, 10);
+  free(tmp);
 
-//   char *endptr;
-//   uint64_t dbnum = strtoull(tmp, &endptr, 10);
-//   free(tmp);
+  if (errno) {
+    write_simple_generic_error(conn, "invalid DB index");
+    return;
+  }
 
-//   if (errno) {
-//     write_simple_generic_error(conn, "invalid DB index");
-//     return;
-//   }
-
-//   GRState *gr_state = shard->gr_state;
-//   if (dbnum >= gr_state->num_dbs) {
-//     write_simple_generic_error(conn, "invalid DB index");
-//     return;
-//   }
+  if (dbnum >= context->num_dbs) {
+    write_simple_generic_error(conn, "invalid DB index");
+    return;
+  }
   
-//   conn->db = dbnum;
-//   write_simple_string(conn, "OK", 2);
-// }
+  conn->db = dbnum;
+  write_simple_string(conn, "OK", 2);
+}
 
 // bool try_parse_signed_integer(const uint8_t *buf, size_t len, int64_t *result) {
 //   int64_t res = 0;
@@ -469,36 +471,36 @@ void cmd_quit(GRContext *context, Conn *conn, const CmdArgs *args) {
 //   write_simple_string(conn, "OK", 2);
 // }
 
-// DEFINE_COMMAND(
-//   dispatch_ping,
-//   KEYED_REQ_CTX(
-//     size_t shard_id;
-//   ),
-//   RESP_CTX(
-//     size_t shard_id;
-//   ),
-//   CMD_VARS(
-//     uint8_t *key = key_buf_ptr;
-//   ),
-//   CMD_PRE_INLINE_EXEC(),
-//   CMD_EXEC(),
-//   CMD_RESP(
-//     write_integer(conn, shard_id);
-//   ),
-//   CMD_PRE_DISPATCH(
-//     ctx->ctx.key = malloc(keylen);
-//     memcpy(ctx->ctx.key, key, keylen);
-//     ctx->ctx.keylen = keylen;
-//     ctx->ctx.hash = hash;
-//     ctx->shard_id = shard_id;
-//   ),
-//   CMD_PRE_DISPATCH_EXEC(),
-//   CMD_POST_DISPATCH_EXEC(
-//     resp_ctx->shard_id = ctx->shard_id;
-//     free(keyed_ctx->key);
-//   ),
-//   CMD_PRE_RESP(
-//     size_t shard_id = ctx->shard_id;
-//   ),
-//   CMD_POST_RESP()
-// )
+DEFINE_COMMAND(
+  dispatch_ping,
+  KEYED_REQ_CTX(
+    size_t shard_id;
+  ),
+  RESP_CTX(
+    size_t shard_id;
+  ),
+  CMD_VARS(
+    uint8_t *key = key_buf_ptr;
+  ),
+  CMD_PRE_INLINE_EXEC(),
+  CMD_EXEC(),
+  CMD_RESP(
+    write_integer(conn, shard_id);
+  ),
+  CMD_PRE_DISPATCH(
+    ctx->ctx.key = malloc(keylen);
+    memcpy(ctx->ctx.key, key, keylen);
+    ctx->ctx.keylen = keylen;
+    ctx->ctx.hash = hash;
+    ctx->shard_id = shard_id;
+  ),
+  CMD_PRE_DISPATCH_EXEC(),
+  CMD_POST_DISPATCH_EXEC(
+    resp_ctx->shard_id = ctx->shard_id;
+    free(keyed_ctx->key);
+  ),
+  CMD_PRE_RESP(
+    size_t shard_id = ctx->shard_id;
+  ),
+  CMD_POST_RESP()
+)
