@@ -89,7 +89,7 @@ typedef void (*dispatch_cb)(GRContext *context, void *ctx);
     cmd_post_dispatch_exec                                                       \
     Shard *target_shard = cb_ctx->src;                                    \
     Reactor *target_reactor = target_shard->reactor;                      \
-    mpscq_enqueue(target_reactor->cb_queue, resp_ctx);\
+    reactor_send_message(reactor, target_reactor, resp_ctx);\
     BITSET64_SET(reactor->soft_notify, target_reactor->id);                    \
   }                                                                       \
   void cmd_##name(GRContext *context, Conn *conn, const CmdArgs *args)          \
@@ -114,7 +114,7 @@ typedef void (*dispatch_cb)(GRContext *context, void *ctx);
       __##name##_req_t *ctx = malloc(sizeof(__##name##_req_t));                                 \
       fill_req_cb_ctx((CBContext *)ctx, shard, target_shard, conn, (dispatch_cb)__cmd_##name##_req); \
       cmd_pre_dispatch                                                            \
-      if (mpscq_enqueue(target_reactor->cb_queue, ctx)) {                             \
+      if (reactor_send_message(reactor, target_reactor, ctx)) {                             \
         conn->state |= DISPATCH_WAITING;\
         BITSET64_SET(reactor->soft_notify, target_reactor->id);                \
       } else {\

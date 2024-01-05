@@ -162,7 +162,7 @@ void reactor_run(Reactor *reactor, GRContext *context) {
       nfds = epoll_wait(fd_epoll, events, 128, 0);
     } else {
       atomic_store(&reactor->sleeping, true);
-      if (mpscq_count(reactor->cb_queue) > 0) {
+      if (reactor_has_pending_messages(reactor)) {
         atomic_store(&reactor->sleeping, false);
         continue;
       }
@@ -389,4 +389,13 @@ void reactor_epoll_close(Reactor *reactor, Conn *conn) {
   reactor->conns->array[conn->fd] = NULL;
   free(conn);
   conn = NULL;
+}
+
+bool reactor_has_pending_messages(Reactor *reactor) {
+  return mpscq_count(reactor->cb_queue) > 0;
+}
+
+bool reactor_send_message(Reactor *reactor, Reactor *target, void *message) {
+  (void)reactor;
+  return mpscq_enqueue(target->cb_queue, message);
 }

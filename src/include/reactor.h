@@ -31,6 +31,8 @@ void reactor_destroy(Reactor *reactor);
 void reactor_run(Reactor *reactor, GRContext *context);
 bool reactor_wakeup_pending(Reactor *reactor, GRContext *context);
 uint64_t reactor_poll_callbacks(Reactor *reactor, GRContext *context);
+bool reactor_send_message(Reactor *reactor, Reactor *target, void *message);
+bool reactor_has_pending_messages(Reactor *reactor);
 
 struct Reactor {
     size_t id;
