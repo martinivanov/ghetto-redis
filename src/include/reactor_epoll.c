@@ -267,6 +267,7 @@ bool reactor_wakeup_pending(Reactor *reactor, GRContext *context) {
       Reactor *r = shard->reactor;
       if (atomic_exchange(&r->sleeping, false)) {
         write(r->wakeup_fd, &(uint64_t){1}, sizeof(uint64_t));
+        notifed = true;
       }
     }
   }
