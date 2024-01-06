@@ -73,7 +73,7 @@ Conn *on_accept(Reactor *reactor, struct sockaddr_in client_addr, int client_fd)
   memset(client, 0, sizeof(*client));
   if (!client) {
     close(client_fd);
-    return;
+    return NULL;
   }
 
   client->fd = client_fd;
@@ -105,7 +105,6 @@ void handle_command(GRContext *context, Conn *conn, CmdArgs *args) {
              "unknown command '%.*s', with args beginning with: '%.*s'",
              (int)cmd_name_len, cmd_name, (int)first_arg_len, first_arg);
     write_simple_generic_error(conn, message);
-    reactor_epoll_flush(conn);
     return;
   }
 
@@ -113,15 +112,10 @@ void handle_command(GRContext *context, Conn *conn, CmdArgs *args) {
     char message[64];
     snprintf(message, sizeof(message), "wrong number of arguments for '%.*s' command", (int)cmd->name_len, cmd->name);
     write_simple_generic_error(conn, message);
-    reactor_epoll_flush(conn);
     return;
   }
 
   cmd->func(context, conn, args);
-
-  if (!(conn->state & DISPATCH_WAITING)) {
-    reactor_epoll_flush(conn);
-  }
 }
 
 bool on_data_available(GRContext *context, Conn *conn) {
@@ -216,107 +210,6 @@ void init_shards(ShardSet *shard_set, Reactor *reactors, size_t num_dbs) {
 //   hashmap_free(gr_state->commands);
 // }
 
-
-
-
-
-// int32_t accept_new_conn(Shard *shard, int fd_listener) {
-//   struct sockaddr_in client_addr = {};
-//   socklen_t socklen = sizeof(client_addr);
-//   int client_fd = accept(fd_listener, (struct sockaddr *)&client_addr, &socklen);
-//   if (client_fd < 0) {
-//     LOG_WARN("accept() error");
-//     return -1;
-//   }
-
-//   LOG_DEBUG("accepted fd=%d", client_fd);
-
-//   fd_set_nb(client_fd);
-//   Conn *client = (Conn *)malloc(sizeof(Conn));
-//   memset(client, 0, sizeof(*client));
-//   if (!client) {
-//     close(client_fd);
-//     return -1;
-//   }
-
-//   client->fd = client_fd;
-//   client->shard_id = shard->shard_id;
-//   client->db = 0;
-//   client->addr = client_addr;
-//   client->recv_buf_size = 0;
-//   client->recv_buf_read = 0;
-//   client->send_buf_size = 0;
-//   client->send_buf_sent = 0;
-
-//   client->idle_start = get_monotonic_usec();
-
-//   // conn_put(shard->conns, client, shard->shard_id);
-//   // deque_push_back_and_attach(shard->idle_conn_queue, client, Conn, idle_conn_queue_node);
-
-//   return client_fd;
-// }
-
-
-
-// bool try_handle_request(Shard *shard, Conn *conn) {
-//   if (unlikely(conn->recv_buf_size < 1)) {
-//     return false;
-//   }
-
-//   uint8_t *buf = conn->recv_buf + conn->recv_buf_read;
-//   CmdArgs args;
-//   ParseError err;
-//   if (likely(buf[0] == '*')) {
-//     err = parse_resp_request(conn, &args);
-//   } else {
-//     err = parse_inline_request(conn, &args);
-//   }
-//   assert(conn->send_buf_sent <= conn->send_buf_size);
-
-//   LOG_DEBUG_WITH_CTX(shard->shard_id, "try_handle_request() err=%d buf='%.*s'", err, (int)conn->recv_buf_size, conn->recv_buf + conn->recv_buf_read);
-
-//   switch (err) {
-//     case PARSE_OK:
-//       break;
-//     case PARSE_INCOMPLETE:
-//       return false;
-//     case PARSE_ERROR:
-//       write_simple_generic_error(conn, "parse error");
-//       conn->state = END;
-//       return false;
-//     case PARSE_ERROR_INVALID_ARGC:
-//       write_simple_generic_error(conn, "invalid argc");
-//       conn->state = END;
-//       return false;
-//   }
-
-// #if LOG_LEVEL == DEBUG_LEVEL
-//   for (size_t i = 0; i < args.argc; i++) {
-//     LOG_DEBUG_WITH_CTX(shard->shard_id, "Arg %zu: %.*s", i, args.lens[i], &args.buf[args.offsets[i]]);
-//   }
-// #endif
-
-//   if (likely(args.argc > 0)) {
-//     handle_command(shard, conn, &args);
-//   }
-
-//   if (unlikely(conn->state == END)) {
-//     return false;
-//   }
-
-//   if (unlikely(conn->recv_buf_size < (args.len))) {
-//     return false;
-//   }
-
-//   conn->recv_buf_read += args.len;
-//   size_t remaining = conn->recv_buf_size - args.len;
-//   LOG_DEBUG_WITH_CTX(shard->shard_id, "[after command] conn->recv_buf_read=%zu conn->recv_buf_size=%zu remaining=%zu", conn->recv_buf_read, conn->recv_buf_size, remaining);
-
-//   conn->recv_buf_size = remaining;
-
-//   return conn->recv_buf_size > 0;
-// }
-
 #define MAX_IDLE_MS 60000
 
 // uint64_t close_idle_connections(Shard *shard) {
@@ -337,56 +230,6 @@ void init_shards(ShardSet *shard_set, Reactor *reactors, size_t num_dbs) {
 //   }
 
 //   return MAX_IDLE_MS; 
-// }
-
-// uint64_t execute_callbacks(Shard *shard) {
-//   size_t num_shards = shard->gr_state->num_shards;
-
-//   uint64_t count = 0;
-//   // for (size_t i = 0; i < num_shards; i++) {
-//   //   if (i == shard->shard_id) {
-//   //     continue;
-//   //   }
-
-//   //   struct spscq *cb_queue = shard->cb_queues[i];
-//   //   while (true) {
-//   //     CBContext *ctx = spscq_dequeue(cb_queue);
-//   //     if (ctx == NULL) {
-//   //       break;
-//   //     }
-
-//   //     count++;
-
-//   //     void *arg = ctx;
-//   //     ctx->cb(shard, arg);
-
-//   //     free(ctx);
-//   //   } 
-//   // }
-
-//   while (true) {
-//     CBContext *ctx = mpscq_dequeue(shard->mpscq);
-//     if (ctx == NULL) {
-//       break;
-//     }
-
-//     count++;
-
-//     void *arg = ctx;
-//     ctx->cb(shard, arg);
-
-//     Conn *c = ctx->conn;
-//     // We may have a have more requests in the pipeline and were previously blocked due to a dispatched request. 
-//     // We check if we are executing on the shard owning the connection and try to process more requests from the pipeline.
-//     // TODO: this can probably be done in a nicer way.
-//     if (c->shard_id == shard->shard_id) {
-//       state_request_cb(shard, c);
-//     }
-
-//     free(ctx);
-//   }
-
-//   return count;
 // }
 
 int pin_shard_to_cpu(Shard *shard) {
@@ -418,7 +261,7 @@ void run_loop(void *arg) {
   reactor_run(reactor, context);
 }
 
-const size_t NUM_THREADS = 6;
+const size_t NUM_THREADS = 4;
 
 int main() {
   Shard shards[NUM_THREADS];

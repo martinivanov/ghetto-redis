@@ -92,7 +92,7 @@ void reactor_destroy(Reactor *reactor) {
     free_vector_Conn_ptr(reactor->conns);
 }
 
-void flush_pending_writes(Reactor *reactor) {
+void reactor_flush_pending_writes(Reactor *reactor) {
   for (size_t i = 0; i < capacity_vector_Conn_ptr(reactor->conns); i++) {
     Conn *conn = reactor->conns->array[i];
     if (conn) {
@@ -142,6 +142,8 @@ void reactor_run(Reactor *reactor, GRContext *context) {
   struct epoll_event events[128];
   int timeout = -1;
   while (reactor->running) {
+    reactor_flush_pending_writes(reactor);
+
     reactor_wakeup_pending(reactor, context);
 
     size_t cb_count = reactor_poll_callbacks(reactor, context); 
@@ -256,8 +258,10 @@ int32_t reactor_epoll_accept(Reactor *reactor, int fd_listener) {
   LOG_DEBUG("accepted fd=%d", client_fd);
 
   Conn *conn = reactor->on_accept(reactor, client_addr, client_fd);
-
-  reactor_conn_emplace(reactor, conn);
+  
+  if (conn != NULL) {
+    reactor_conn_emplace(reactor, conn);
+  }
 
   return client_fd;
 }
