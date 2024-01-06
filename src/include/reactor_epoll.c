@@ -111,6 +111,18 @@ static void fd_set_nb(int fd) {
   }
 }
 
+
+void flush_pending_writes(Reactor *reactor) {
+  for (size_t i = 0; i < capacity_vector_Conn_ptr(reactor->conns); i++) {
+    Conn *conn = reactor->conns->array[i];
+    if (conn) {
+      while (conn->send_buf_size > 0) {
+        reactor_epoll_flush(conn);
+      }
+    }
+  }
+}
+
 void reactor_run(Reactor *reactor, GRContext *context) {
   LOG_DEBUG("starting reactor %zu", reactor->id);
   LOG_DEBUG("reactor->wakeup_fd=%d", reactor->wakeup_fd);
@@ -231,6 +243,8 @@ void reactor_run(Reactor *reactor, GRContext *context) {
 
     // timeout = close_idle_connections(shard);
     timeout = -1;
+
+    flush_pending_writes(reactor);
   }
 
   close(fd_listener);

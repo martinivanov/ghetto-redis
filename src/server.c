@@ -153,9 +153,9 @@ void handle_command(GRContext *context, Conn *conn, CmdArgs *args) {
 
   cmd->func(context, conn, args);
 
-  if (!(conn->state & DISPATCH_WAITING)) {
-    reactor_epoll_flush(conn);
-  }
+  // if (!(conn->state & DISPATCH_WAITING)) {
+  //   reactor_epoll_flush(conn);
+  // }
 }
 
 bool on_data_available(GRContext *context, Conn *conn) {
@@ -442,17 +442,17 @@ void run_loop(void *arg) {
   Reactor *reactor = shard->reactor; 
 
   // set thread affinity
-  int pin_err = pin_shard_to_cpu(shard);
-  if (pin_err) {
-    panic("pin_shard_to_cpu() failed");
-  }
+//  int pin_err = pin_shard_to_cpu(shard);
+//  if (pin_err) {
+//    panic("pin_shard_to_cpu() failed");
+//  }
 
   LOG_DEBUG("shard id: %d run_loop()", shard->shard_id);
 
   reactor_run(reactor, context);
 }
 
-const size_t NUM_THREADS = 4;
+const size_t NUM_THREADS = 6;
 
 int main() {
   Shard shards[NUM_THREADS];
