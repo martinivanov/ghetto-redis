@@ -16,6 +16,12 @@
         "stdatomic.h": "c",
         "unistd.h": "c",
         "eventfd.h": "c",
-        "state.h": "c"
+        "state.h": "c",
+        "socket.h": "c",
+        "mpscq.h": "c",
+        "spscq.h": "c",
+        "vyukov_mpsc.h": "c",
+        "mpmcq.h": "c",
+        "stdint.h": "c"
     }
 }

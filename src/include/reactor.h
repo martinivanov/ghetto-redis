@@ -9,10 +9,10 @@
 #include <sys/eventfd.h>
 #include <stdatomic.h>
 
-#include "mpscq.h"
 #include "bitset.h"
 #include "vector_types.h"
 #include "state.h"
+#include "vyukov_mpsc.h"
 
 // typedef all callbacks
 typedef void (*reactor_on_cb) (Reactor *reactor, void *arg);
@@ -38,7 +38,7 @@ struct Reactor {
     size_t id;
     bool running;
     int wakeup_fd;
-    struct mpscq *cb_queue;
+    mpscq_t *cb_queue;
     bitset64 soft_notify;
     atomic_bool sleeping;
 

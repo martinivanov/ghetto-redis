@@ -21,6 +21,7 @@
 #include "logging.h"
 #include "protocol.h"
 #include "vector_types.h"
+#include "mpmcq.h"
 
 int32_t reactor_epoll_accept(Reactor *reactor, int fd_listener);
 bool reactor_epoll_try_read(Reactor *reactor, Conn *conn);
@@ -64,7 +65,10 @@ void reactor_init(
 ) {
     reactor->id = id;
     reactor->running = true;
-    reactor->cb_queue = mpscq_create(NULL, 10000);
+
+    reactor->cb_queue = malloc(sizeof(mpmcq));
+    mpmcq_init(reactor->cb_queue, 8192);
+
     reactor->sleeping = false;
     reactor->soft_notify = 0;
 
@@ -263,7 +267,7 @@ uint64_t reactor_poll_callbacks(Reactor *reactor, GRContext *context) {
   uint64_t count = 0;
 
   while (true) {
-    void *ctx = mpscq_dequeue(reactor->cb_queue);
+    void *ctx = mpmcq_dequeue(reactor->cb_queue);
     if (ctx == NULL) {
       break;
     }
@@ -392,10 +396,12 @@ void reactor_epoll_close(Reactor *reactor, Conn *conn) {
 }
 
 bool reactor_has_pending_messages(Reactor *reactor) {
-  return mpscq_count(reactor->cb_queue) > 0;
+  size_t count = mpmcq_count(reactor->cb_queue);
+
+  return count > 0;
 }
 
 bool reactor_send_message(Reactor *reactor, Reactor *target, void *message) {
   (void)reactor;
-  return mpscq_enqueue(target->cb_queue, message);
+  return mpmcq_enqueue(target->cb_queue, message);
 }
