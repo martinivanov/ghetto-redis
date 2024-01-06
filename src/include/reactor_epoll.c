@@ -211,8 +211,6 @@ void reactor_run(Reactor *reactor, GRContext *context) {
 
     // timeout = close_idle_connections(shard);
     timeout = -1;
-
-    flush_pending_writes(reactor);
   }
 
   close(fd_listener);

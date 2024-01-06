@@ -119,9 +119,9 @@ void handle_command(GRContext *context, Conn *conn, CmdArgs *args) {
 
   cmd->func(context, conn, args);
 
-  // if (!(conn->state & DISPATCH_WAITING)) {
-  //   reactor_epoll_flush(conn);
-  // }
+  if (!(conn->state & DISPATCH_WAITING)) {
+    reactor_epoll_flush(conn);
+  }
 }
 
 bool on_data_available(GRContext *context, Conn *conn) {

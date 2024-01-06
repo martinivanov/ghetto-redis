@@ -71,6 +71,7 @@ typedef void (*dispatch_cb)(GRContext *context, void *ctx);
     cmd_resp                                                              \
     cmd_post_resp                                                         \
     conn->state &= ~DISPATCH_WAITING;                                     \
+    reactor_epoll_flush(conn);                                          \
   }\
   void __cmd_##name##_req(GRContext *context, __##name##_req_t *ctx)                       \
   {                                                                       \
