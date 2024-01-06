@@ -104,8 +104,8 @@ void cmd_echo(GRContext *context, Conn *conn, const CmdArgs *args) {
 void cmd_quit(GRContext *context, Conn *conn, const CmdArgs *args) {
   (void)context;
   (void)args;
-    conn->state = END;
-    write_simple_string(conn, "OK", 2);
+  conn->flags |= END;
+  write_simple_string(conn, "OK", 2);
 }
 
 DEFINE_COMMAND(

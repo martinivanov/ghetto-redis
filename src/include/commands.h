@@ -70,7 +70,7 @@ typedef void (*dispatch_cb)(GRContext *context, void *ctx);
     cmd_pre_resp                                                           \
     cmd_resp                                                              \
     cmd_post_resp                                                         \
-    conn->state &= ~DISPATCH_WAITING;                                     \
+    conn->flags &= ~DISPATCH_WAITING;                                     \
   }\
   void __cmd_##name##_req(GRContext *context, __##name##_req_t *ctx)                       \
   {                                                                       \
@@ -114,7 +114,7 @@ typedef void (*dispatch_cb)(GRContext *context, void *ctx);
       fill_req_cb_ctx((CBContext *)ctx, shard, target_shard, conn, (dispatch_cb)__cmd_##name##_req); \
       cmd_pre_dispatch                                                            \
       if (reactor_send_message(reactor, target_reactor, ctx)) {                             \
-        conn->state |= DISPATCH_WAITING;\
+        conn->flags |= DISPATCH_WAITING;\
         BITSET64_SET(reactor->soft_notify, target_reactor->id);                \
       } else {\
         write_simple_generic_error(conn, "shard dispatch queue full");\

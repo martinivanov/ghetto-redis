@@ -40,9 +40,6 @@
 
 #define _GNU_SOURCE
 
-#define unlikely(expr) __builtin_expect(!!(expr), 0)
-#define likely(expr) __builtin_expect(!!(expr), 1)
-
 static uint64_t get_monotonic_usec() {
   struct timespec tv = {0, 0};
   clock_gettime(CLOCK_MONOTONIC, &tv);
@@ -123,14 +120,14 @@ void handle_command(GRContext *context, Conn *conn, CmdArgs *args) {
 bool on_data_available(GRContext *context, Conn *conn) {
   Shard *shard = context->shard;
 
-  if (unlikely(conn->recv_buf_size < 1)) {
+  if (conn->recv_buf_size < 1) {
     return false;
   }
 
   uint8_t *buf = conn->recv_buf + conn->recv_buf_read;
   CmdArgs args;
   ParseError err;
-  if (likely(buf[0] == '*')) {
+  if (buf[0] == '*') {
     err = parse_resp_request(conn, &args);
   } else {
     err = parse_inline_request(conn, &args);
@@ -146,11 +143,11 @@ bool on_data_available(GRContext *context, Conn *conn) {
       return false;
     case PARSE_ERROR:
       write_simple_generic_error(conn, "parse error");
-      conn->state = END;
+      conn->flags |= END;
       return false;
     case PARSE_ERROR_INVALID_ARGC:
       write_simple_generic_error(conn, "invalid argc");
-      conn->state = END;
+      conn->flags |= END;
       return false;
   }
 
@@ -160,15 +157,15 @@ bool on_data_available(GRContext *context, Conn *conn) {
   }
 #endif
 
-  if (likely(args.argc > 0)) {
+  if (args.argc > 0) {
     handle_command(context, conn, &args);
   }
 
-  if (unlikely(conn->state == END)) {
+  if (conn->flags & END) {
     return false;
   }
 
-  if (unlikely(conn->recv_buf_size < (args.len))) {
+  if (conn->recv_buf_size < (args.len)) {
     return false;
   }
 

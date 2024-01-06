@@ -12,7 +12,7 @@
 #define MAX_ARGC 64
 #define MAX_PIPELINE_REQUESTS 128
 
-enum State {
+enum ConnFlags {
     REQUEST = 1 << 0,
     RESPONSE = 1 << 1,
     BLOCKED = 1 << 2,
@@ -40,7 +40,7 @@ static const uint8_t CRLF[] = {'\r', '\n'};
 
 typedef struct {
     int fd;
-    enum State state;
+    enum ConnFlags flags;
     size_t shard_id;
 
     struct sockaddr_in addr;

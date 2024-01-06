@@ -193,18 +193,18 @@ void reactor_run(Reactor *reactor, GRContext *context) {
         
         if (ev.events & EPOLLOUT) {
           reactor_epoll_flush(conn);
-          if (!(conn->state & BLOCKED)) {
+          if (!(conn->flags & BLOCKED)) {
             epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
           }
         }
 
-        if (conn->state == END || ev.events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+        if ((conn->flags & END) || ev.events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
           epoll_unregister(fd_epoll, fd);
           reactor_epoll_close(reactor, conn);
         } else {
-          if (conn->state & BLOCKED) {
+          if (conn->flags & BLOCKED) {
             LOG_WARN("conn->state & BLOCKED");
-            conn->state &= ~BLOCKED;
+            conn->flags &= ~BLOCKED;
             epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLOUT | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
           }
         }
@@ -286,7 +286,7 @@ void reactor_epoll_on_epollin(Reactor *reactor, Conn *conn, GRContext *context) 
 
   if (rv < 0) {
     LOG_WARN("read() error");
-    conn->state = END;
+    conn->flags |= END;
     return;
   }
 
@@ -297,14 +297,14 @@ void reactor_epoll_on_epollin(Reactor *reactor, Conn *conn, GRContext *context) 
       LOG_INFO("EOF");
     }
 
-    conn->state = END;
+    conn->flags |= END;
     return;
   }
 
   conn->recv_buf_size += (size_t)rv;
   assert(conn->recv_buf_size <= sizeof(conn->recv_buf));
 
-  if (conn->state & DISPATCH_WAITING) {
+  if (conn->flags & DISPATCH_WAITING) {
     return;
   }  
 
@@ -324,13 +324,13 @@ void reactor_epoll_flush(Conn *conn) {
   } while (rv < 0 && errno == EINTR);
 
   if (rv < 0 && errno == EAGAIN) {
-    conn->state |= BLOCKED;
+    conn->flags |= BLOCKED;
     return;
   }
 
   if (rv < 0) {
     LOG_WARN("write() error");
-    conn->state = END;
+    conn->flags = END;
     return;
   }
 
