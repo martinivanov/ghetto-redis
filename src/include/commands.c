@@ -10,6 +10,7 @@
 #include "state.h"
 #include "protocol.h"
 #include "kv.h"
+#include "reactor.h"
 
 inline const Command* lookup_command(CmdArgs *CmdArgs, struct hashmap* commands) {
   Command *cmd = &(Command) {
@@ -53,13 +54,13 @@ struct hashmap* init_commands() {
   register_command(commands, "SHUTDOWN", 0, cmd_shutdown);
   register_command(commands, "FLUSHALL", 0, cmd_flushall);
   register_command(commands, "SELECT", 1, cmd_select);
-  register_command(commands, "INCR", 1, cmd_incr);
-  register_command(commands, "DECR", 1, cmd_decr);
-  register_command(commands, "INCRBY", 2, cmd_incrby);
-  register_command(commands, "DECRBY", 2, cmd_decrby);
-  register_command(commands, "CLIENTS", 0, cmd_clients);
-  register_command(commands, "MGET", VAR_ARGC, cmd_mget);
-  register_command(commands, "MSET", VAR_ARGC, cmd_mset);
+  // register_command(commands, "INCR", 1, cmd_incr);
+  // register_command(commands, "DECR", 1, cmd_decr);
+  // register_command(commands, "INCRBY", 2, cmd_incrby);
+  // register_command(commands, "DECRBY", 2, cmd_decrby);
+  // register_command(commands, "CLIENTS", 0, cmd_clients);
+  // register_command(commands, "MGET", VAR_ARGC, cmd_mget);
+  // register_command(commands, "MSET", VAR_ARGC, cmd_mset);
   register_command(commands, "DPING", 1, cmd_dispatch_ping);
 
   return commands;
@@ -87,21 +88,21 @@ void fill_req_cb_ctx(CBContext *cb_ctx, Shard *src, Shard *dst, Conn *conn, disp
   cb_ctx->cb = cb;
 }
 
-void cmd_ping(Shard *shard, Conn *conn, const CmdArgs *args) {
-  (void)shard;
+void cmd_ping(GRContext *context, Conn *conn, const CmdArgs *args) {
+  (void)context;
   (void)args;
   write_simple_string(conn, "PONG", 4);
 }
 
-void cmd_echo(Shard *shard, Conn *conn, const CmdArgs *args) {
-  (void)shard;
+void cmd_echo(GRContext *context, Conn *conn, const CmdArgs *args) {
+  (void)context;
   const uint8_t *echo = args->buf + args->offsets[1];
   const size_t echolen = args->lens[1];
   write_bulk_string(conn, echo, echolen);
 }
 
-void cmd_quit(Shard *shard, Conn *conn, const CmdArgs *args) {
-  (void)shard;
+void cmd_quit(GRContext *context, Conn *conn, const CmdArgs *args) {
+  (void)context;
   (void)args;
     conn->state = END;
     write_simple_string(conn, "OK", 2);
@@ -136,12 +137,35 @@ DEFINE_COMMAND(
   CMD_PRE_DISPATCH_EXEC(),
   CMD_POST_DISPATCH_EXEC(
     free(keyed_ctx->key);
-    resp_ctx->entry = entry;
+    if (entry) {
+      // We need to copy the whole entry because overwriting entries during SET frees the old entry and
+      // we may have a dispatched GET response that may try to dereference the freed old entry.
+      // This slows down GETs but it's the simplest solution for now.
+      // TODO: use RCU, reference counting or something else to avoid copying the whole entry
+      uint8_t *key_copy = (uint8_t *)malloc(entry->keylen);
+      memcpy(key_copy, entry->key, entry->keylen);
+
+      uint8_t *val_copy = (uint8_t *)malloc(entry->vallen);
+      memcpy(val_copy, entry->val, entry->vallen);
+
+      Entry *copy = ENTRY_INIT(key_copy, entry->keylen, val_copy, entry->vallen);
+
+      resp_ctx->entry = (Entry *)malloc(sizeof(Entry));
+      memcpy(resp_ctx->entry, copy, sizeof(Entry));
+    } else {
+      resp_ctx->entry = NULL;
+    }
   ),
   CMD_PRE_RESP(
    Entry *entry = ctx->entry; 
   ),
-  CMD_POST_RESP()
+  CMD_POST_RESP(
+    if (entry) {
+      free((void *)entry->key);
+      free((void *)entry->val);
+      free(entry);
+    }
+  )
 )
 
 DEFINE_COMMAND(
@@ -224,32 +248,34 @@ DEFINE_COMMAND(
   CMD_POST_RESP()
 )
 
-void cmd_shutdown(Shard *shard, Conn *conn, const CmdArgs *args) {
+void cmd_shutdown(GRContext *context, Conn *conn, const CmdArgs *args) {
   (void)conn;
   (void)args;
-  GRState *gr_state = shard->gr_state;
-  gr_state->running = false;
-  for (size_t i = 0; i < gr_state->num_shards; i++) {
-    Shard *s = &gr_state->shards[i];
-    write(s->queue_efd, &(uint64_t){1}, sizeof(uint64_t));
+  ShardSet *shard_set = context->shard_set;
+  for (size_t i = 0; i < shard_set->size; i++) {
+    Shard *shard = &shard_set->shards[i];
+    Reactor *reactor = shard->reactor;
+    reactor->running = false;
+    BITSET64_SET(reactor->soft_notify, i);
   }
 }
 
-void cmd_flushall(Shard *shard, Conn *conn, const CmdArgs *args) {
+void cmd_flushall(GRContext *context, Conn *conn, const CmdArgs *args) {
   (void)args;
+  ShardSet *shard_set = context->shard_set;
 
-  GRState *gr_state = shard->gr_state;
-  for (size_t i = 0; i < gr_state->num_dbs; i++) {
-    struct hashmap *db = shard->dbs[i];
-    hashmap_clear(db, true);
+  for (size_t i = 0; i < shard_set->size; i++) {
+    Shard *shard = &shard_set->shards[i];
+    for (size_t j = 0; j < context->num_dbs; j++) {
+      struct hashmap *db = shard->dbs[j];
+      hashmap_clear(db, true);
+    }
   }
 
   write_simple_string(conn, "OK", 2);
 }
 
-void cmd_select(Shard *shard, Conn *conn, const CmdArgs *args) {
-  (void)shard;
-
+void cmd_select(GRContext *context, Conn *conn, const CmdArgs *args) {
   const uint8_t *cmd = args->buf + args->offsets[0];
   const uint8_t *db = &cmd[args->offsets[1]];
   const size_t dblen = args->lens[1];
@@ -267,8 +293,7 @@ void cmd_select(Shard *shard, Conn *conn, const CmdArgs *args) {
     return;
   }
 
-  GRState *gr_state = shard->gr_state;
-  if (dbnum >= gr_state->num_dbs) {
+  if (dbnum >= context->num_dbs) {
     write_simple_generic_error(conn, "invalid DB index");
     return;
   }
@@ -277,174 +302,174 @@ void cmd_select(Shard *shard, Conn *conn, const CmdArgs *args) {
   write_simple_string(conn, "OK", 2);
 }
 
-bool try_parse_signed_integer(const uint8_t *buf, size_t len, int64_t *result) {
-  int64_t res = 0;
-  bool is_negative = false;
-  size_t pos = 0;
+// bool try_parse_signed_integer(const uint8_t *buf, size_t len, int64_t *result) {
+//   int64_t res = 0;
+//   bool is_negative = false;
+//   size_t pos = 0;
   
-  if (buf[pos] == '-' || buf[pos] == '+') {
-    if (buf[pos] == '-') {
-      is_negative = true;
-    }
-    pos++;
-  }
+//   if (buf[pos] == '-' || buf[pos] == '+') {
+//     if (buf[pos] == '-') {
+//       is_negative = true;
+//     }
+//     pos++;
+//   }
 
-  while(pos < len && isdigit(buf[pos])) {
-    res = res * 10 + (buf[pos] - '0');
-    pos++;
-  }
+//   while(pos < len && isdigit(buf[pos])) {
+//     res = res * 10 + (buf[pos] - '0');
+//     pos++;
+//   }
 
-  if (pos != len) {
-    return false;
-  }
+//   if (pos != len) {
+//     return false;
+//   }
 
-  if (is_negative) {
-    res = -res;
-  }
+//   if (is_negative) {
+//     res = -res;
+//   }
   
-  *result = res;
+//   *result = res;
 
-  return true;
-}
+//   return true;
+// }
 
-void modify_counter(Shard *shard, Conn *conn, const CmdArgs *args, int64_t delta) {
-  const size_t keylen = args->lens[1];
-  const uint8_t *key = (uint8_t *)malloc(keylen);
-  memcpy((void *)key, args->buf + args->offsets[1], keylen);
+// void modify_counter(Shard *shard, Conn *conn, const CmdArgs *args, int64_t delta) {
+//   const size_t keylen = args->lens[1];
+//   const uint8_t *key = (uint8_t *)malloc(keylen);
+//   memcpy((void *)key, args->buf + args->offsets[1], keylen);
 
-  struct hashmap *db = shard->dbs[conn->db];
-  int64_t val = 0;
-  Entry *entry = (Entry *)hashmap_get(db, &(Entry){.key = key, .keylen = keylen});
-  if (entry) {
-    if (!try_parse_signed_integer(entry->val, entry->vallen, &val)) {
-      write_simple_generic_error(conn, "value is not an integer or out of range");
-      free((void *)key);
-      return;
-    }
-  }
+//   struct hashmap *db = shard->dbs[conn->db];
+//   int64_t val = 0;
+//   Entry *entry = (Entry *)hashmap_get(db, &(Entry){.key = key, .keylen = keylen});
+//   if (entry) {
+//     if (!try_parse_signed_integer(entry->val, entry->vallen, &val)) {
+//       write_simple_generic_error(conn, "value is not an integer or out of range");
+//       free((void *)key);
+//       return;
+//     }
+//   }
 
-  val += delta;
-  char *buf = (char*)malloc(20); // 20 bytes for int64_t
-  size_t len = sprintf(buf, "%ld", val);
-  Entry *existing = (Entry *)hashmap_set(db, &(Entry){.key = key, .keylen = keylen, .val = (uint8_t *)buf, .vallen = len});
-  if (existing) {
-    entry_free((void*)existing);
-  }
-  write_integer(conn, val);
-}
+//   val += delta;
+//   char *buf = (char*)malloc(20); // 20 bytes for int64_t
+//   size_t len = sprintf(buf, "%ld", val);
+//   Entry *existing = (Entry *)hashmap_set(db, &(Entry){.key = key, .keylen = keylen, .val = (uint8_t *)buf, .vallen = len});
+//   if (existing) {
+//     entry_free((void*)existing);
+//   }
+//   write_integer(conn, val);
+// }
 
-void cmd_incr(Shard *shard, Conn *conn, const CmdArgs *args) {
-  modify_counter(shard, conn, args, 1);
-}
+// void cmd_incr(Shard *shard, Conn *conn, const CmdArgs *args) {
+//   modify_counter(shard, conn, args, 1);
+// }
 
-void cmd_decr(Shard *shard, Conn *conn, const CmdArgs *args) {
-  modify_counter(shard, conn, args, -1);
-}
+// void cmd_decr(Shard *shard, Conn *conn, const CmdArgs *args) {
+//   modify_counter(shard, conn, args, -1);
+// }
 
-void cmd_incrby(Shard *shard, Conn *conn, const CmdArgs *args) {
-  int64_t delta = 0;
-  if (!try_parse_signed_integer(args->buf + args->offsets[2], args->lens[2], &delta)) {
-    write_simple_generic_error(conn, "value is not an integer or out of range");
-    return;
-  }
+// void cmd_incrby(Shard *shard, Conn *conn, const CmdArgs *args) {
+//   int64_t delta = 0;
+//   if (!try_parse_signed_integer(args->buf + args->offsets[2], args->lens[2], &delta)) {
+//     write_simple_generic_error(conn, "value is not an integer or out of range");
+//     return;
+//   }
 
-  if (delta < 0) {
-    write_simple_generic_error(conn, "increment would produce negative integer");
-    return;
-  }
+//   if (delta < 0) {
+//     write_simple_generic_error(conn, "increment would produce negative integer");
+//     return;
+//   }
 
-  modify_counter(shard, conn, args, delta);
-}
+//   modify_counter(shard, conn, args, delta);
+// }
 
-void cmd_decrby(Shard *shard, Conn *conn, const CmdArgs *args) {
-  int64_t delta = 0;
-  if (!try_parse_signed_integer(args->buf + args->offsets[2], args->lens[2], &delta)) {
-    write_simple_generic_error(conn, "value is not an integer or out of range");
-    return;
-  }
+// void cmd_decrby(Shard *shard, Conn *conn, const CmdArgs *args) {
+//   int64_t delta = 0;
+//   if (!try_parse_signed_integer(args->buf + args->offsets[2], args->lens[2], &delta)) {
+//     write_simple_generic_error(conn, "value is not an integer or out of range");
+//     return;
+//   }
 
-  if (delta < 0) {
-    write_simple_generic_error(conn, "decrement would produce negative integer");
-    return;
-  }
+//   if (delta < 0) {
+//     write_simple_generic_error(conn, "decrement would produce negative integer");
+//     return;
+//   }
 
-  modify_counter(shard, conn, args, -delta);
-}
+//   modify_counter(shard, conn, args, -delta);
+// }
 
-void cmd_clients(Shard *shard, Conn *conn, const CmdArgs *args) {
-  (void)args;
+// void cmd_clients(Shard *shard, Conn *conn, const CmdArgs *args) {
+//   (void)args;
 
-  vector_Conn_ptr *conns = shard->conns;
+//   vector_Conn_ptr *conns = shard->reactor.conns;
 
-  size_t count = 0;
-  for (size_t i = 0; i < conns->size; i++) {
-    Conn *c = conns->array[i];
-    if (c == NULL || c->state == END) {
-      continue;
-    }
-    count++;
-  }
+//   size_t count = 0;
+//   for (size_t i = 0; i < conns->size; i++) {
+//     Conn *c = conns->array[i];
+//     if (c == NULL || c->state == END) {
+//       continue;
+//     }
+//     count++;
+//   }
 
-  write_array_header(conn, count);
+//   write_array_header(conn, count);
 
-  for (size_t i = 0; i < conns->size; i++) {
-    Conn *c = conns->array[i];
-    if (c == NULL || c->state == END) {
-      continue;
-    }
+//   for (size_t i = 0; i < conns->size; i++) {
+//     Conn *c = conns->array[i];
+//     if (c == NULL || c->state == END) {
+//       continue;
+//     }
 
-    uint16_t port = ntohs(c->addr.sin_port);
-    char ip[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &(c->addr.sin_addr), ip, INET_ADDRSTRLEN);
+//     uint16_t port = ntohs(c->addr.sin_port);
+//     char ip[INET_ADDRSTRLEN];
+//     inet_ntop(AF_INET, &(c->addr.sin_addr), ip, INET_ADDRSTRLEN);
 
-    char buf[256];
-    size_t len = sprintf(buf, "fd=%d %s:%d", c->fd, ip, port); 
+//     char buf[256];
+//     size_t len = sprintf(buf, "fd=%d %s:%d", c->fd, ip, port); 
     
-    write_bulk_string(conn, (uint8_t *)buf, len);
-  }
-}
+//     write_bulk_string(conn, (uint8_t *)buf, len);
+//   }
+// }
 
-void cmd_mget(Shard *shard, Conn *conn, const CmdArgs *args) {
-  struct hashmap *db = shard->dbs[conn->db];
-  write_array_header(conn, args->argc - 1);
-  for (size_t i = 1; i < args->argc; i++) {
-    uint8_t *key = args->buf + args->offsets[i];
-    size_t keylen = args->lens[i];
+// void cmd_mget(Shard *shard, Conn *conn, const CmdArgs *args) {
+//   struct hashmap *db = shard->dbs[conn->db];
+//   write_array_header(conn, args->argc - 1);
+//   for (size_t i = 1; i < args->argc; i++) {
+//     uint8_t *key = args->buf + args->offsets[i];
+//     size_t keylen = args->lens[i];
 
-    Entry *entry = (Entry *)hashmap_get(db, &(Entry){.key = key, .keylen = keylen});
-    if (entry) {
-      write_bulk_string(conn, entry->val, entry->vallen);
-    } else {
-      write_null_bulk_string(conn);
-    }
-  }
-}
+//     Entry *entry = (Entry *)hashmap_get(db, &(Entry){.key = key, .keylen = keylen});
+//     if (entry) {
+//       write_bulk_string(conn, entry->val, entry->vallen);
+//     } else {
+//       write_null_bulk_string(conn);
+//     }
+//   }
+// }
 
-void cmd_mset(Shard *shard, Conn *conn, const CmdArgs *args) {
-  if (args->argc % 2 != 1) {
-    write_simple_generic_error(conn, "wrong number of arguments for MSET");
-    return;
-  }
+// void cmd_mset(Shard *shard, Conn *conn, const CmdArgs *args) {
+//   if (args->argc % 2 != 1) {
+//     write_simple_generic_error(conn, "wrong number of arguments for MSET");
+//     return;
+//   }
 
-  struct hashmap *db = shard->dbs[conn->db];
-  for (size_t i = 1; i < args->argc; i += 2) {
-    size_t keylen = args->lens[i];
-    uint8_t *key = (uint8_t*)malloc(keylen);
-    memcpy((void *)key, args->buf + args->offsets[i], keylen);
+//   struct hashmap *db = shard->dbs[conn->db];
+//   for (size_t i = 1; i < args->argc; i += 2) {
+//     size_t keylen = args->lens[i];
+//     uint8_t *key = (uint8_t*)malloc(keylen);
+//     memcpy((void *)key, args->buf + args->offsets[i], keylen);
 
-    size_t vallen = args->lens[i + 1];
-    uint8_t *val = (uint8_t*)malloc(vallen);
-    memcpy((void *)val, args->buf + args->offsets[i + 1], vallen);
+//     size_t vallen = args->lens[i + 1];
+//     uint8_t *val = (uint8_t*)malloc(vallen);
+//     memcpy((void *)val, args->buf + args->offsets[i + 1], vallen);
 
-    Entry *entry = &(Entry){.key = key, .keylen = keylen, .val = val, .vallen = vallen};
-    Entry *existing = (Entry *)hashmap_set(db, entry);
-    if (existing) {
-      entry_free((void*)existing);
-    }
-  }
+//     Entry *entry = &(Entry){.key = key, .keylen = keylen, .val = val, .vallen = vallen};
+//     Entry *existing = (Entry *)hashmap_set(db, entry);
+//     if (existing) {
+//       entry_free((void*)existing);
+//     }
+//   }
 
-  write_simple_string(conn, "OK", 2);
-}
+//   write_simple_string(conn, "OK", 2);
+// }
 
 DEFINE_COMMAND(
   dispatch_ping,

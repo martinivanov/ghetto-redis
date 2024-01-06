@@ -1,0 +1,27 @@
+{
+    "files.associations": {
+        "pthread.h": "c",
+        "sched.h": "c",
+        "stdbool.h": "c",
+        "logging.h": "c",
+        "*.tcc": "c",
+        "string": "c",
+        "string_view": "c",
+        "bitset": "c",
+        "vector": "c",
+        "memory": "c",
+        "system_error": "c",
+        "epoll.h": "c",
+        "types.h": "c",
+        "stdatomic.h": "c",
+        "unistd.h": "c",
+        "eventfd.h": "c",
+        "state.h": "c",
+        "socket.h": "c",
+        "mpscq.h": "c",
+        "spscq.h": "c",
+        "vyukov_mpsc.h": "c",
+        "mpmcq.h": "c",
+        "stdint.h": "c"
+    }
+}

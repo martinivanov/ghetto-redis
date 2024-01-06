@@ -36,3 +36,5 @@ run-release-numa: release
 
 clean:
 	rm -rf $(TARGET)
+
+all: release

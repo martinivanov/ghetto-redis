@@ -57,3 +57,9 @@ void *spscq_dequeue(struct spscq *q) {
 
     return obj;
 }
+
+bool spscq_is_empty(struct spscq *q) {
+    size_t head = atomic_load_explicit(&q->head, memory_order_relaxed);
+    size_t tail = atomic_load_explicit(&q->tail, memory_order_acquire);
+    return head == tail;
+}
