@@ -16,7 +16,7 @@
 
 // typedef all callbacks
 typedef void (*reactor_on_cb) (Reactor *reactor, void *arg);
-typedef void (*reactor_on_accept) (Reactor *reactor, struct sockaddr_in, int client_fd);
+typedef Conn *(*reactor_on_accept) (Reactor *reactor, struct sockaddr_in, int client_fd);
 typedef bool (*reactor_on_data_available) (GRContext *context, Conn *conn);
 
 void reactor_init(

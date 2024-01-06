@@ -22,6 +22,7 @@
 #include "protocol.h"
 #include "vector_types.h"
 #include "mpmcq.h"
+#include "utils.h"
 
 int32_t reactor_epoll_accept(Reactor *reactor, int fd_listener);
 bool reactor_epoll_try_read(Reactor *reactor, Conn *conn);
@@ -91,27 +92,6 @@ void reactor_destroy(Reactor *reactor) {
     free_vector_Conn_ptr(reactor->conns);
 }
 
-// TODO: move somewhere else
-static void fd_set_nb(int fd) {
-  errno = 0;
-  int flags = fcntl(fd, F_GETFL, 0);
-  if (errno) {
-    panic("fcntl error");
-    return;
-  }
-
-  flags |= O_NONBLOCK;
-  //TODO: extract this into a separate function
-  flags |= O_NDELAY;
-
-  errno = 0;
-  (void)fcntl(fd, F_SETFL, flags);
-  if (errno) {
-    panic("fcntl error");
-  }
-}
-
-
 void flush_pending_writes(Reactor *reactor) {
   for (size_t i = 0; i < capacity_vector_Conn_ptr(reactor->conns); i++) {
     Conn *conn = reactor->conns->array[i];
@@ -147,7 +127,7 @@ void reactor_run(Reactor *reactor, GRContext *context) {
     panic("listen()");
   }
 
-  fd_set_nb(fd_listener);
+  set_fd_options(fd_listener, O_NONBLOCK);
 
   LOG_DEBUG("fd_listener=%d", fd_listener);
 
@@ -158,14 +138,6 @@ void reactor_run(Reactor *reactor, GRContext *context) {
 
   epoll_register(fd_epoll, reactor->wakeup_fd, EPOLLIN);
 
-  uint64_t total_nfds = 0;
-  uint64_t total_flushes = 0;
-  uint64_t total_callbacks = 0;
-
-  uint64_t total_eventfd_events = 0;
-  uint64_t total_read_events = 0;
-  uint64_t total_write_events = 0;
-
   int nfds = 0;
   struct epoll_event events[128];
   int timeout = -1;
@@ -173,7 +145,6 @@ void reactor_run(Reactor *reactor, GRContext *context) {
     reactor_wakeup_pending(reactor, context);
 
     size_t cb_count = reactor_poll_callbacks(reactor, context); 
-    total_callbacks += cb_count;
     if (cb_count > 0) {
       nfds = epoll_wait(fd_epoll, events, 128, 0);
     } else {
@@ -204,7 +175,6 @@ void reactor_run(Reactor *reactor, GRContext *context) {
         }
         epoll_register(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
       } else if (events[i].data.fd == reactor->wakeup_fd) {
-        total_eventfd_events++;
         uint64_t val = 0; 
         read(reactor->wakeup_fd, &val, sizeof(val));
       } else {
@@ -216,12 +186,10 @@ void reactor_run(Reactor *reactor, GRContext *context) {
         //conn->idle_start = get_monotonic_usec();
         // deque_move_to_back(&shard->idle_conn_queue, conn->idle_conn_queue_node);
         if (ev.events & EPOLLIN) {
-          total_read_events++;
           reactor_epoll_on_epollin(reactor, conn, context);
         } 
         
         if (ev.events & EPOLLOUT) {
-          total_write_events++;
           reactor_epoll_flush(conn);
           if (!(conn->state & BLOCKED)) {
             epoll_modify(fd_epoll, fd, EPOLLIN | EPOLLERR | EPOLLRDHUP | EPOLLHUP);
@@ -278,25 +246,6 @@ bool reactor_wakeup_pending(Reactor *reactor, GRContext *context) {
   return notifed;
 }
 
-uint64_t reactor_poll_callbacks(Reactor *reactor, GRContext *context) {
-  uint64_t count = 0;
-
-  while (true) {
-    void *ctx = mpmcq_dequeue(reactor->cb_queue);
-    if (ctx == NULL) {
-      break;
-    }
-
-    count++;
-
-    reactor->on_cb(context, ctx);
-
-    free(ctx);
-  }
-
-  return count;
-}
-
 int32_t reactor_epoll_accept(Reactor *reactor, int fd_listener) {
   struct sockaddr_in client_addr = {};
   socklen_t socklen = sizeof(client_addr);
@@ -308,8 +257,9 @@ int32_t reactor_epoll_accept(Reactor *reactor, int fd_listener) {
 
   LOG_DEBUG("accepted fd=%d", client_fd);
 
+  Conn *conn = reactor->on_accept(reactor, client_addr, client_fd);
 
-  reactor->on_accept(reactor, client_addr, client_fd);
+  reactor_conn_emplace(reactor, conn);
 
   return client_fd;
 }
@@ -405,15 +355,4 @@ void reactor_epoll_close(Reactor *reactor, Conn *conn) {
   reactor->conns->array[conn->fd] = NULL;
   free(conn);
   conn = NULL;
-}
-
-bool reactor_has_pending_messages(Reactor *reactor) {
-  size_t count = mpmcq_count(reactor->cb_queue);
-
-  return count > 0;
-}
-
-bool reactor_send_message(Reactor *reactor, Reactor *target, void *message) {
-  (void)reactor;
-  return mpmcq_enqueue(target->cb_queue, message);
 }

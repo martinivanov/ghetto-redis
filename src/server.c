@@ -34,6 +34,7 @@
 #include "include/spscq.h"
 #include "include/mpscq.h"
 #include "include/reactor.h"
+#include "include/utils.h"
 
 #define _GNU_SOURCE
 
@@ -63,45 +64,10 @@ void on_cb(GRContext *context, void *arg) {
   }
 }
 
-void conn_put(vector_Conn_ptr *conns, Conn *conn, size_t shard_id) {
-  size_t capacity = capacity_vector_Conn_ptr(conns);
-  if (capacity <= (size_t)conn->fd) {
-    resize_vector_Conn_ptr(conns, conn->fd + 1);
-  }
-
-  size_t new_capacity = capacity_vector_Conn_ptr(conns);
-  for (size_t i = capacity; i < new_capacity; i++) {
-    conns->array[i] = NULL;
-  }
-
-  conns->array[conn->fd] = conn;
-  conns->used = conns->size;
-}
-
-static void fd_set_nb(int fd) {
-  errno = 0;
-  int flags = fcntl(fd, F_GETFL, 0);
-  if (errno) {
-    panic("fcntl error");
-    return;
-  }
-
-  flags |= O_NONBLOCK;
-  //TODO: extract this into a separate function
-  flags |= O_NDELAY;
-
-  errno = 0;
-  (void)fcntl(fd, F_SETFL, flags);
-  if (errno) {
-    panic("fcntl error");
-  }
-}
-
-
-void on_accept(Reactor *reactor, struct sockaddr_in client_addr, int client_fd) {
+Conn *on_accept(Reactor *reactor, struct sockaddr_in client_addr, int client_fd) {
   LOG_DEBUG("on_accept()");
 
-  fd_set_nb(client_fd);
+  set_fd_options(client_fd, O_NONBLOCK | O_NDELAY);
 
   Conn *client = (Conn *)malloc(sizeof(Conn));
   memset(client, 0, sizeof(*client));
@@ -121,7 +87,7 @@ void on_accept(Reactor *reactor, struct sockaddr_in client_addr, int client_fd) 
 
   client->idle_start = get_monotonic_usec();
 
-  conn_put(reactor->conns, client, reactor->id);
+  return client;
   // deque_push_back_and_attach(shard->idle_conn_queue, client, Conn, idle_conn_queue_node);
 }
 
