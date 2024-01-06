@@ -70,11 +70,14 @@ void reactor_init(
     reactor->cb_queue = malloc(sizeof(mpmcq));
     mpmcq_init(reactor->cb_queue, 8192);
 
-    reactor->sleeping = false;
+    reactor->sleeping = true;
     reactor->soft_notify = 0;
 
     reactor->conns = (vector_Conn_ptr *)malloc(sizeof(vector_Conn_ptr));
-    init_vector_Conn_ptr(reactor->conns, 1024);
+    init_vector_Conn_ptr(reactor->conns, 128);
+    for (size_t i = 0; i < capacity_vector_Conn_ptr(reactor->conns); i++) {
+      reactor->conns->array[i] = NULL;
+    }
 
     reactor->on_cb = on_cb;
     reactor->on_accept = on_accept;

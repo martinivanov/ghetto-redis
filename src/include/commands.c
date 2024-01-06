@@ -251,13 +251,16 @@ DEFINE_COMMAND(
 void cmd_shutdown(GRContext *context, Conn *conn, const CmdArgs *args) {
   (void)conn;
   (void)args;
+  Reactor *reactor = context->shard->reactor;
   ShardSet *shard_set = context->shard_set;
   for (size_t i = 0; i < shard_set->size; i++) {
     Shard *shard = &shard_set->shards[i];
-    Reactor *reactor = shard->reactor;
-    reactor->running = false;
+    Reactor *r = shard->reactor;
+    r->running = false;
     BITSET64_SET(reactor->soft_notify, i);
   }
+
+  reactor_wakeup_pending(reactor, context);
 }
 
 void cmd_flushall(GRContext *context, Conn *conn, const CmdArgs *args) {
@@ -356,77 +359,6 @@ bool try_modify_counter(Shard *shard, Conn *conn, const uint8_t *key, const size
 
   return true;
 }
-
-// void cmd_incr(Shard *shard, Conn *conn, const CmdArgs *args) {
-//   modify_counter(shard, conn, args, 1);
-// }
-
-// void cmd_decr(Shard *shard, Conn *conn, const CmdArgs *args) {
-//   modify_counter(shard, conn, args, -1);
-// }
-
-// void cmd_incrby(Shard *shard, Conn *conn, const CmdArgs *args) {
-//   int64_t delta = 0;
-//   if (!try_parse_signed_integer(args->buf + args->offsets[2], args->lens[2], &delta)) {
-//     write_simple_generic_error(conn, "value is not an integer or out of range");
-//     return;
-//   }
-
-//   if (delta < 0) {
-//     write_simple_generic_error(conn, "increment would produce negative integer");
-//     return;
-//   }
-
-//   modify_counter(shard, conn, args, delta);
-// }
-
-// void cmd_decrby(Shard *shard, Conn *conn, const CmdArgs *args) {
-//   int64_t delta = 0;
-//   if (!try_parse_signed_integer(args->buf + args->offsets[2], args->lens[2], &delta)) {
-//     write_simple_generic_error(conn, "value is not an integer or out of range");
-//     return;
-//   }
-
-//   if (delta < 0) {
-//     write_simple_generic_error(conn, "decrement would produce negative integer");
-//     return;
-//   }
-
-//   modify_counter(shard, conn, args, -delta);
-// }
-
-// void cmd_clients(Shard *shard, Conn *conn, const CmdArgs *args) {
-//   (void)args;
-
-//   vector_Conn_ptr *conns = shard->reactor.conns;
-
-//   size_t count = 0;
-//   for (size_t i = 0; i < conns->size; i++) {
-//     Conn *c = conns->array[i];
-//     if (c == NULL || c->state == END) {
-//       continue;
-//     }
-//     count++;
-//   }
-
-//   write_array_header(conn, count);
-
-//   for (size_t i = 0; i < conns->size; i++) {
-//     Conn *c = conns->array[i];
-//     if (c == NULL || c->state == END) {
-//       continue;
-//     }
-
-//     uint16_t port = ntohs(c->addr.sin_port);
-//     char ip[INET_ADDRSTRLEN];
-//     inet_ntop(AF_INET, &(c->addr.sin_addr), ip, INET_ADDRSTRLEN);
-
-//     char buf[256];
-//     size_t len = sprintf(buf, "fd=%d %s:%d", c->fd, ip, port); 
-    
-//     write_bulk_string(conn, (uint8_t *)buf, len);
-//   }
-// }
 
 // void cmd_mget(Shard *shard, Conn *conn, const CmdArgs *args) {
 //   struct hashmap *db = shard->dbs[conn->db];
