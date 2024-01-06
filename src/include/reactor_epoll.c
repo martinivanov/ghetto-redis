@@ -317,17 +317,14 @@ int32_t reactor_epoll_accept(Reactor *reactor, int fd_listener) {
 void reactor_epoll_on_epollin(Reactor *reactor, Conn *conn, GRContext *context) {
   assert(conn->recv_buf_size < sizeof(conn->recv_buf));
 
-  //if (io && !(conn->state & PIPELINE)) {
   ssize_t rv = 0;
   do {
     size_t cap = sizeof(conn->recv_buf) - conn->recv_buf_size;
     if (conn->recv_buf_read > 0) {
-      //LOG_DEBUG_WITH_CTX(shard->shard_id, "compacting buffer by moving %zu byte from offset %zu to 0", conn->recv_buf_size, conn->recv_buf_read);
       memmove(conn->recv_buf, &conn->recv_buf[conn->recv_buf_read], conn->recv_buf_size);
       conn->recv_buf_read = 0;
     }
     rv = read(conn->fd, &conn->recv_buf[conn->recv_buf_size], cap);
-    //LOG_DEBUG_WITH_CTX(shard->shard_id, "read %zu bytes(up to %zu) errno=%d", rv, cap, errno);
   } while (rv < 0 && errno == EINTR);
 
   if (rv < 0 && errno == EAGAIN) {
