@@ -54,10 +54,10 @@ struct hashmap* init_commands() {
   register_command(commands, "SHUTDOWN", 0, cmd_shutdown);
   register_command(commands, "FLUSHALL", 0, cmd_flushall);
   register_command(commands, "SELECT", 1, cmd_select);
-  // register_command(commands, "INCR", 1, cmd_incr);
-  // register_command(commands, "DECR", 1, cmd_decr);
-  // register_command(commands, "INCRBY", 2, cmd_incrby);
-  // register_command(commands, "DECRBY", 2, cmd_decrby);
+  register_command(commands, "INCR", 1, cmd_incr);
+  register_command(commands, "DECR", 1, cmd_decr);
+  register_command(commands, "INCRBY", 2, cmd_incrby);
+  register_command(commands, "DECRBY", 2, cmd_decrby);
   // register_command(commands, "CLIENTS", 0, cmd_clients);
   // register_command(commands, "MGET", VAR_ARGC, cmd_mget);
   // register_command(commands, "MSET", VAR_ARGC, cmd_mset);
@@ -302,61 +302,60 @@ void cmd_select(GRContext *context, Conn *conn, const CmdArgs *args) {
   write_simple_string(conn, "OK", 2);
 }
 
-// bool try_parse_signed_integer(const uint8_t *buf, size_t len, int64_t *result) {
-//   int64_t res = 0;
-//   bool is_negative = false;
-//   size_t pos = 0;
+bool try_parse_signed_integer(const uint8_t *buf, size_t len, int64_t *result) {
+  int64_t res = 0;
+  bool is_negative = false;
+  size_t pos = 0;
   
-//   if (buf[pos] == '-' || buf[pos] == '+') {
-//     if (buf[pos] == '-') {
-//       is_negative = true;
-//     }
-//     pos++;
-//   }
+  if (buf[pos] == '-' || buf[pos] == '+') {
+    if (buf[pos] == '-') {
+      is_negative = true;
+    }
+    pos++;
+  }
 
-//   while(pos < len && isdigit(buf[pos])) {
-//     res = res * 10 + (buf[pos] - '0');
-//     pos++;
-//   }
+  while(pos < len && isdigit(buf[pos])) {
+    res = res * 10 + (buf[pos] - '0');
+    pos++;
+  }
 
-//   if (pos != len) {
-//     return false;
-//   }
+  if (pos != len) {
+    return false;
+  }
 
-//   if (is_negative) {
-//     res = -res;
-//   }
+  if (is_negative) {
+    res = -res;
+  }
   
-//   *result = res;
+  *result = res;
 
-//   return true;
-// }
+  return true;
+}
 
-// void modify_counter(Shard *shard, Conn *conn, const CmdArgs *args, int64_t delta) {
-//   const size_t keylen = args->lens[1];
-//   const uint8_t *key = (uint8_t *)malloc(keylen);
-//   memcpy((void *)key, args->buf + args->offsets[1], keylen);
+bool try_modify_counter(Shard *shard, Conn *conn, const uint8_t *key, const size_t keylen, const uint64_t hash, uint64_t *res, int64_t delta) {
+  struct hashmap *db = shard->dbs[conn->db];
+  int64_t val = 0;
+  Entry *entry = (Entry *)hashmap_get_with_hash(db, &(Entry){.key = key, .keylen = keylen}, hash);
+  if (entry) {
+    if (!try_parse_signed_integer(entry->val, entry->vallen, &val)) {
+      free((void *)key);
+      return false;
+    }
+  }
 
-//   struct hashmap *db = shard->dbs[conn->db];
-//   int64_t val = 0;
-//   Entry *entry = (Entry *)hashmap_get(db, &(Entry){.key = key, .keylen = keylen});
-//   if (entry) {
-//     if (!try_parse_signed_integer(entry->val, entry->vallen, &val)) {
-//       write_simple_generic_error(conn, "value is not an integer or out of range");
-//       free((void *)key);
-//       return;
-//     }
-//   }
+  val += delta;
+  char *buf = (char*)malloc(20); // 20 bytes for int64_t
+  size_t len = sprintf(buf, "%ld", val);
+  Entry *new = ENTRY_INIT(key, keylen, buf, len);
+  Entry *existing = (Entry *)hashmap_set_with_hash(db, new, hash);
+  if (existing) {
+    entry_free((void*)existing);
+  }
 
-//   val += delta;
-//   char *buf = (char*)malloc(20); // 20 bytes for int64_t
-//   size_t len = sprintf(buf, "%ld", val);
-//   Entry *existing = (Entry *)hashmap_set(db, &(Entry){.key = key, .keylen = keylen, .val = (uint8_t *)buf, .vallen = len});
-//   if (existing) {
-//     entry_free((void*)existing);
-//   }
-//   write_integer(conn, val);
-// }
+  *res = val;
+
+  return true;
+}
 
 // void cmd_incr(Shard *shard, Conn *conn, const CmdArgs *args) {
 //   modify_counter(shard, conn, args, 1);
@@ -501,6 +500,178 @@ DEFINE_COMMAND(
   ),
   CMD_PRE_RESP(
     size_t shard_id = ctx->shard_id;
+  ),
+  CMD_POST_RESP()
+)
+
+DEFINE_COMMAND(
+  incr, 
+  KEYED_REQ_CTX(), 
+  RESP_CTX(
+    uint64_t res;
+  ),
+  CMD_VARS(
+    uint8_t *key = malloc(keylen);
+    memcpy(key, key_buf_ptr, keylen);
+  ),
+  CMD_PRE_INLINE_EXEC(
+  ),
+  CMD_EXEC(
+    uint64_t res = 0;
+    try_modify_counter(shard, conn, key, keylen, hash, &res, 1);
+  ),
+  CMD_RESP(
+    write_integer(conn, res);
+  ),
+  CMD_PRE_DISPATCH(
+    ctx->ctx.key = malloc(keylen);
+    memcpy(ctx->ctx.key, key, keylen);
+    ctx->ctx.keylen = keylen;
+    ctx->ctx.hash = hash;
+  ),
+  CMD_PRE_DISPATCH_EXEC(
+  ),
+  CMD_POST_DISPATCH_EXEC(
+    resp_ctx->res = res;
+  ),
+  CMD_PRE_RESP(
+    uint64_t res = ctx->res;
+  ),
+  CMD_POST_RESP()
+)
+
+DEFINE_COMMAND(
+  decr, 
+  KEYED_REQ_CTX(), 
+  RESP_CTX(
+    uint64_t res;
+  ),
+  CMD_VARS(
+    uint8_t *key = malloc(keylen);
+    memcpy(key, key_buf_ptr, keylen);
+  ),
+  CMD_PRE_INLINE_EXEC(
+  ),
+  CMD_EXEC(
+    uint64_t res = 0;
+    try_modify_counter(shard, conn, key, keylen, hash, &res, -1);
+  ),
+  CMD_RESP(
+    write_integer(conn, res);
+  ),
+  CMD_PRE_DISPATCH(
+    ctx->ctx.key = malloc(keylen);
+    memcpy(ctx->ctx.key, key, keylen);
+    ctx->ctx.keylen = keylen;
+    ctx->ctx.hash = hash;
+  ),
+  CMD_PRE_DISPATCH_EXEC(
+  ),
+  CMD_POST_DISPATCH_EXEC(
+    resp_ctx->res = res;
+  ),
+  CMD_PRE_RESP(
+    uint64_t res = ctx->res;
+  ),
+  CMD_POST_RESP()
+)
+
+DEFINE_COMMAND(
+  incrby,
+  KEYED_REQ_CTX(
+    int64_t delta;
+  ),
+  RESP_CTX(
+    uint64_t res;
+  ),
+  CMD_VARS(
+    uint8_t *key = malloc(keylen);
+    memcpy(key, key_buf_ptr, keylen);
+
+    int64_t delta = 0;
+    if (!try_parse_signed_integer(args->buf + args->offsets[2], args->lens[2], &delta)) {
+      write_simple_generic_error(conn, "value is not an integer or out of range");
+      return;
+    }
+
+    if (delta < 0) {
+      write_simple_generic_error(conn, "increment would produce negative integer");
+      return;
+    }
+  ),
+  CMD_PRE_INLINE_EXEC(),
+  CMD_EXEC(
+    uint64_t res = 0;
+    try_modify_counter(shard, conn, key, keylen, hash, &res, delta);
+  ),
+  CMD_RESP(
+    write_integer(conn, res);
+  ),
+  CMD_PRE_DISPATCH(
+    ctx->ctx.key = malloc(keylen);
+    memcpy(ctx->ctx.key, key, keylen);
+    ctx->ctx.keylen = keylen;
+    ctx->ctx.hash = hash;
+    ctx->delta = delta;
+  ),
+  CMD_PRE_DISPATCH_EXEC(
+    uint64_t delta = ctx->delta;
+  ),
+  CMD_POST_DISPATCH_EXEC(
+    resp_ctx->res = res;
+  ),
+  CMD_PRE_RESP(
+    uint64_t res = ctx->res;
+  ),
+  CMD_POST_RESP()
+)
+
+DEFINE_COMMAND(
+  decrby,
+  KEYED_REQ_CTX(
+    int64_t delta;
+  ),
+  RESP_CTX(
+    uint64_t res;
+  ),
+  CMD_VARS(
+    uint8_t *key = malloc(keylen);
+    memcpy(key, key_buf_ptr, keylen);
+
+    int64_t delta = 0;
+    if (!try_parse_signed_integer(args->buf + args->offsets[2], args->lens[2], &delta)) {
+      write_simple_generic_error(conn, "value is not an integer or out of range");
+      return;
+    }
+
+    if (delta < 0) {
+      write_simple_generic_error(conn, "increment would produce negative integer");
+      return;
+    }
+  ),
+  CMD_PRE_INLINE_EXEC(),
+  CMD_EXEC(
+    uint64_t res = 0;
+    try_modify_counter(shard, conn, key, keylen, hash, &res, -delta);
+  ),
+  CMD_RESP(
+    write_integer(conn, res);
+  ),
+  CMD_PRE_DISPATCH(
+    ctx->ctx.key = malloc(keylen);
+    memcpy(ctx->ctx.key, key, keylen);
+    ctx->ctx.keylen = keylen;
+    ctx->ctx.hash = hash;
+    ctx->delta = delta;
+  ),
+  CMD_PRE_DISPATCH_EXEC(
+    uint64_t delta = ctx->delta;
+  ),
+  CMD_POST_DISPATCH_EXEC(
+    resp_ctx->res = res;
+  ),
+  CMD_PRE_RESP(
+    uint64_t res = ctx->res;
   ),
   CMD_POST_RESP()
 )
