@@ -116,7 +116,8 @@ typedef void (*dispatch_cb)(GRContext *context, void *ctx);
       Reactor *target_reactor = target_shard->reactor;                                                                                                                                       \
       __##name##_req_t *ctx = malloc(sizeof(__##name##_req_t));                                                                                                                              \
       fill_req_cb_ctx((CBContext *)ctx, shard, target_shard, conn, (dispatch_cb)__cmd_##name##_req);                                                                                         \
-      cmd_pre_dispatch if (reactor_send_message(reactor, target_reactor, ctx))                                                                                                               \
+      cmd_pre_dispatch                                                                                                                                                                       \
+      if (reactor_send_message(reactor, target_reactor, ctx))                                                                                                                                \
       {                                                                                                                                                                                      \
         conn->flags |= DISPATCH_WAITING;                                                                                                                                                     \
         BITSET64_SET(reactor->soft_notify, target_reactor->id);                                                                                                                              \
