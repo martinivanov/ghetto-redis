@@ -279,8 +279,7 @@ void cmd_flushall(GRContext *context, Conn *conn, const CmdArgs *args) {
 }
 
 void cmd_select(GRContext *context, Conn *conn, const CmdArgs *args) {
-  const uint8_t *cmd = args->buf + args->offsets[0];
-  const uint8_t *db = &cmd[args->offsets[1]];
+  const uint8_t *db = args->buf + args->offsets[1];
   const size_t dblen = args->lens[1];
 
   char* tmp = (char*)malloc(dblen + 1);
