@@ -146,6 +146,9 @@ bool on_data_available(GRContext *context, Conn *conn) {
       return false;
   }
 
+  // dump buffer
+  LOG_DEBUG("conn->recv_buf:%.*s", (int)MESSAGE_MAX_LENGTH, conn->recv_buf);
+
 #if LOG_LEVEL == DEBUG_LEVEL
   for (size_t i = 0; i < args.argc; i++) {
     LOG_DEBUG_WITH_CTX(shard->shard_id, "Arg %zu: %.*s", i, args.lens[i], &args.buf[args.offsets[i]]);

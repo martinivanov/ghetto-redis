@@ -37,7 +37,9 @@ void reactor_conn_emplace(Reactor *reactor, Conn *conn);
 
 struct Reactor {
     size_t id;
+    void *handle;
     bool running;
+    int listen_fd;
     int wakeup_fd;
     mpmcq *cb_queue;
     bitset64 soft_notify;

@@ -47,8 +47,29 @@ typedef struct {
   Conn *conn;
 } reactor_uring_read_request;
 
+typedef struct {
+  enum UringRequestType type;
+  Conn *conn;
+} reactor_uring_write_request;
+
+typedef struct {
+  enum UringRequestType type;
+  Conn *conn;
+} reactor_uring_close_request;
+
 void free_request(reactor_uring_request *req) {
   free(req);
+}
+
+void add_write_request(struct io_uring *ring, Conn *conn) {
+  reactor_uring_write_request *req = malloc(sizeof(reactor_uring_write_request));
+  req->type = WRITE;
+  req->conn = conn;
+  uint8_t *buf = &conn->send_buf[conn->send_buf_sent];
+  size_t remaining = conn->send_buf_size - conn->send_buf_sent;
+  struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+  io_uring_prep_write(sqe, conn->fd, buf, remaining, 0);
+  io_uring_sqe_set_data(sqe, req);
 }
 
 void add_read_request(struct io_uring *ring, Conn *conn) {
@@ -72,25 +93,110 @@ void add_accept_request(struct io_uring *ring, int fd_listener) {
   io_uring_sqe_set_data(sqe, req);
 }
 
-Conn *reactor_uring_accept(Reactor *reactor, struct io_uring_cqe *cqe) {
+void add_close_request(struct io_uring *ring, Conn *conn) {
+  reactor_uring_close_request *req = malloc(sizeof(reactor_uring_close_request));
+  req->type = CLOSE;
+  req->conn = conn;
+  struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+  io_uring_prep_close(sqe, conn->fd);
+  io_uring_sqe_set_data(sqe, req);
+}
+
+void reactor_uring_accepted(Reactor *reactor, struct io_uring_cqe *cqe) {
+   struct io_uring *ring = (struct io_uring *)reactor->handle;
    reactor_uring_accept_request *req = (reactor_uring_accept_request *)cqe->user_data;
-    int client_fd = cqe->res;
-    if (client_fd < 0) {
-      LOG_DEBUG("accept error: %d", client_fd);
-      return NULL;
-    }
+   int client_fd = cqe->res;
+   if (client_fd < 0) {
+     LOG_DEBUG("accept error: %d", client_fd);
+     return;
+   }
 
-    LOG_DEBUG("accepted fd=%d", client_fd);
+   LOG_DEBUG("accepted fd=%d", client_fd);
 
-    Conn *conn = reactor->on_accept(reactor, req->addr, client_fd);
+   Conn *conn = reactor->on_accept(reactor, req->addr, client_fd);
 
-    if (conn != NULL) {
-      reactor_conn_emplace(reactor, conn);
-    }
+   if (conn != NULL) {
+     reactor_conn_emplace(reactor, conn);
+   }
 
-    free_request(req); 
+   free_request(req); 
+   add_accept_request(ring, reactor->listen_fd);
+   add_read_request(ring, conn);
+   io_uring_submit(ring);
+}
 
-    return conn;
+void reactor_uring_data_read(Reactor *reactor, GRContext *context, struct io_uring_cqe *cqe) {
+  struct io_uring *ring = (struct io_uring *)reactor->handle;
+  reactor_uring_read_request *req = (reactor_uring_read_request *)cqe->user_data;
+  Conn *conn = req->conn;
+
+  if (cqe->res <= 0) {
+    LOG_DEBUG("EOF");
+    conn->flags |= END;
+    free_request(req);
+    add_close_request(ring, conn);
+    io_uring_submit(ring);
+    return;
+  }
+
+  if (conn->recv_buf_read > 0) {
+    memmove(conn->recv_buf, &conn->recv_buf[conn->recv_buf_read], conn->recv_buf_size);
+    conn->recv_buf_read = 0;
+  }
+
+  conn->recv_buf_size += cqe->res;
+
+  LOG_DEBUG("read %zu bytes into recv_buf_size=%zu, recv_buf_read=%zu", cqe->res, conn->recv_buf_size, conn->recv_buf_read);
+
+  while (reactor->on_data_available(context, conn)) {
+  }
+  
+  if (conn->flags & END) {
+    free_request(req);
+    add_close_request(ring, conn);
+    io_uring_submit(ring);
+    return;
+  }
+  
+  size_t remaining_send = conn->send_buf_size - conn->send_buf_sent;
+  if (conn->send_buf_size > 0) {
+    add_write_request(ring, conn);
+  }  
+
+  add_read_request(ring, conn);
+  io_uring_submit(ring);
+
+  free_request(req);
+}
+
+void reactor_uring_data_written(Reactor *reactor, GRContext *context, struct io_uring_cqe *cqe) {
+  struct io_uring *ring = (struct io_uring *)reactor->handle;
+  reactor_uring_write_request *req = (reactor_uring_write_request *)cqe->user_data;
+  Conn *conn = req->conn;
+
+  conn->send_buf_sent += cqe->res;
+
+  size_t remaining = conn->send_buf_size - conn->send_buf_sent;
+
+  if (remaining > 0) {
+    LOG_DEBUG("more data available in the response buffer remaining=%zu", remaining);
+    add_write_request(ring, conn);
+    io_uring_submit(ring);
+  } else {
+    LOG_DEBUG("response buffer fully flushed, resetting");
+    conn->send_buf_size = 0;
+    conn->send_buf_sent = 0;
+  } 
+
+  free_request(req);
+}
+
+void reactor_uring_closed(Reactor *reactor, struct io_uring_cqe *cqe) {
+  reactor_uring_close_request *req = (reactor_uring_close_request *)cqe->user_data;
+  Conn *conn = req->conn;
+  reactor->conns->array[conn->fd] = NULL;
+  free(conn);
+  free_request(req);
 }
 
 void reactor_run(Reactor *reactor, GRContext *context) {
@@ -121,6 +227,9 @@ void reactor_run(Reactor *reactor, GRContext *context) {
 
   struct io_uring ring;
 
+  reactor->listen_fd = fd_listener;
+  reactor->handle = &ring;
+
   rv = io_uring_queue_init(128, &ring, 0);
   add_accept_request(&ring, fd_listener);
   io_uring_submit(&ring);
@@ -133,37 +242,55 @@ void reactor_run(Reactor *reactor, GRContext *context) {
     switch (req->type) {
       case ACCEPT: {
         LOG_DEBUG("ACCEPT");
-        Conn *conn = reactor_uring_accept(reactor, cqe);
-        add_accept_request(&ring, fd_listener);
-        add_read_request(&ring, conn);
-        io_uring_submit(&ring);
+        reactor_uring_accepted(reactor, cqe);
         break;
       }
       case READ: {
         LOG_DEBUG("READ");
-        reactor_uring_read_request *read_req = (reactor_uring_read_request *)cqe->user_data;
-        Conn *conn = read_req->conn;
-        conn->recv_buf_size += cqe->res;
-
-        printf("accumulated recv_buf %.*s\n", (int)conn->recv_buf_size, conn->recv_buf);
-
-        add_read_request(&ring, conn);
-        io_uring_submit(&ring);
-        // free_request(req);
+        reactor_uring_data_read(reactor, context, cqe);
         break;
       }
       case WRITE: {
         LOG_DEBUG("WRITE");
+        reactor_uring_data_written(reactor, context, cqe);
         break;
       }
       case CLOSE: {
         LOG_DEBUG("CLOSE");
+        reactor_uring_closed(reactor, cqe);
         break;
       }
     }
   
     io_uring_cqe_seen(&ring, cqe);
   }
+
+  size_t pending_close_requests = 0;
+  for (size_t i = 0; i < capacity_vector_Conn_ptr(reactor->conns); i++) {
+    Conn *conn = reactor->conns->array[i];
+    if (conn) {
+        add_close_request(&ring, conn);
+        pending_close_requests++;
+    }
+  }
+
+  io_uring_submit(&ring);
+
+  do {
+    int ret = io_uring_wait_cqe(&ring, &cqe);
+    reactor_uring_request *req = (reactor_uring_request *)cqe->user_data;
+
+    switch (req->type) {
+      case CLOSE: {
+        LOG_DEBUG("CLOSE");
+        reactor_uring_closed(reactor, cqe);
+        pending_close_requests--;
+        break;
+      }
+    }
+  
+    io_uring_cqe_seen(&ring, cqe);
+  } while (pending_close_requests > 0);
 }
 
 bool reactor_wakeup_pending(Reactor *reactor, GRContext *context) {
