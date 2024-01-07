@@ -195,19 +195,16 @@ void init_shards(ShardSet *shard_set, Reactor *reactors, size_t num_dbs) {
   }
 }
 
-// void free_server_state(GRContext *context) {
-//   for (size_t i = 0; i < gr_state->shards.size; i++) {
-//     Shard *shard = &gr_state->shards.shards[i];
-//     for (size_t j = 0; j < gr_state->num_dbs; j++) {
-//       hashmap_free(shard->dbs[j]);
-//     }
+void free_context(GRContext *context) {
+  Shard *shard = context->shard;
+  for (size_t j = 0; j < context->num_dbs; j++) {
+    hashmap_free(shard->dbs[j]);
+  }
 
-//     free(shard->dbs);
+  free(shard->dbs);
 
-//     reactor_destroy(&shard->reactor);
-//   }
-//   hashmap_free(gr_state->commands);
-// }
+  reactor_destroy(shard->reactor);
+}
 
 #define MAX_IDLE_MS 60000
 
@@ -296,9 +293,10 @@ int main() {
 
   for (size_t i = 0; i < NUM_THREADS; i++) {
     pthread_join(threads[i], NULL);
+    free_context(&contexts[i]);
   }
 
-  // free_server_state(&gr_state);
+  hashmap_free(commands);
 
   return 0;
 }

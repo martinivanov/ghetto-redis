@@ -91,8 +91,10 @@ void reactor_init(
 }
 
 void reactor_destroy(Reactor *reactor) {
-    mpscq_destroy(reactor->cb_queue);
+    mpmcq_destroy(reactor->cb_queue);
+    free(reactor->cb_queue);
     free_vector_Conn_ptr(reactor->conns);
+    free(reactor->conns);
 }
 
 void reactor_flush_pending_writes(Reactor *reactor) {
