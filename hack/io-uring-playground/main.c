@@ -77,15 +77,13 @@ void free_request(request *req) {
   free(req);
 }
 
-void add_accept_request(int fd_listener, struct sockaddr_in *client_addr,
-                        socklen_t *socklen) {
+void add_accept_request(int fd_listener, struct sockaddr_in *client_addr, socklen_t *socklen) {
   request *req = malloc(sizeof(request));
   req->type = ACCEPT;
   req->addr = client_addr;
   req->addr_len = socklen;
   struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
-  io_uring_prep_accept(sqe, fd_listener, (struct sockaddr *)req->addr,
-                       req->addr_len, 0);
+  io_uring_prep_accept(sqe, fd_listener, (struct sockaddr *)req->addr, req->addr_len, 0);
   io_uring_sqe_set_data(sqe, req);
 }
 

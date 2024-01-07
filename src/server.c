@@ -35,10 +35,6 @@
 #include "include/reactor.h"
 #include "include/utils.h"
 
-#define _GNU_SOURCE
-
-#define _GNU_SOURCE
-
 static uint64_t get_monotonic_usec() {
   struct timespec tv = {0, 0};
   clock_gettime(CLOCK_MONOTONIC, &tv);
@@ -256,7 +252,7 @@ void run_loop(void *arg) {
   reactor_run(reactor, context);
 }
 
-const size_t NUM_THREADS = 4;
+const size_t NUM_THREADS = 1;
 
 int main() {
   Shard shards[NUM_THREADS];
