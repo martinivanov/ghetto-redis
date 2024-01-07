@@ -2,6 +2,10 @@
 
 #ifdef REACTOR_URING
 
+// _GNU_SOURCE is needed for at* functions, see: https://stackoverflow.com/questions/5582211/what-does-define-gnu-source-imply
+#define _GNU_SOURCE
+#include <fcntl.h>
+
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -9,7 +13,6 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <errno.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -23,6 +26,11 @@
 
 #include "utils.h"
 #include "reactor.h"
+
+// Based on:
+// https://unixism.net/loti/what_is_io_uring.html
+// https://github.com/axboe/liburing/wiki/io_uring-and-networking-in-2023#ring-messages
+// https://nick-black.com/dankwiki/index.php/Io_uring
 
 enum UringRequestType {
   ACCEPT,
@@ -89,7 +97,7 @@ void add_accept_request(struct io_uring *ring, int fd_listener) {
   req->addr_len = sizeof(req->addr);
   struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
   // TODO: try to use multishot accept
-  io_uring_prep_accept(sqe, fd_listener, (struct sockaddr *)&req->addr, &req->addr_len, 0);
+  io_uring_prep_multishot_accept(sqe, fd_listener, (struct sockaddr *)&req->addr, &req->addr_len, 0);
   io_uring_sqe_set_data(sqe, req);
 }
 
@@ -119,8 +127,6 @@ void reactor_uring_accepted(Reactor *reactor, struct io_uring_cqe *cqe) {
      reactor_conn_emplace(reactor, conn);
    }
 
-   free_request(req); 
-   add_accept_request(ring, reactor->listen_fd);
    add_read_request(ring, conn);
    io_uring_submit(ring);
 }
@@ -294,7 +300,7 @@ void reactor_run(Reactor *reactor, GRContext *context) {
 }
 
 bool reactor_wakeup_pending(Reactor *reactor, GRContext *context) {
-    return true;
+  return true;
 }
 
 #endif // REACTOR_URING
