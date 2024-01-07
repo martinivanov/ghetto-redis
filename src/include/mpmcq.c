@@ -1,8 +1,9 @@
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stdlib.h> 
+#include <sys/types.h>
 
 #include "mpmcq.h"
-#include <sys/types.h>
 
 void mpmcq_init(mpmcq* queue, size_t size) {
     queue->buffer = (mpmcq_cell*)malloc(sizeof(mpmcq_cell) * size);

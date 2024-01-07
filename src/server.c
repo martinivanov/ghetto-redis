@@ -32,7 +32,6 @@
 #include "include/commands.h"
 #include "include/kv.h"
 #include "include/spscq.h"
-#include "include/mpscq.h"
 #include "include/reactor.h"
 #include "include/utils.h"
 
@@ -118,7 +117,7 @@ void handle_command(GRContext *context, Conn *conn, CmdArgs *args) {
 }
 
 bool on_data_available(GRContext *context, Conn *conn) {
-  Shard *shard = context->shard;
+  [[maybe_unused]] Shard *shard = context->shard;
 
   if (conn->recv_buf_size < 1) {
     return false;
@@ -187,7 +186,7 @@ void init_shards(ShardSet *shard_set, Reactor *reactors, size_t num_dbs) {
 
     shard->reactor = &reactors[i];
 
-    uint64_t seed = get_monotonic_usec(NULL);
+    uint64_t seed = get_monotonic_usec();
     shard->dbs = (struct hashmap **)malloc(sizeof(struct hashmap *) * num_dbs);
     for (size_t j = 0; j < num_dbs; j++) {
       shard->dbs[j] = hashmap_new(sizeof(Entry), 1 << 20, seed, seed, entry_hash_xxhash3, entry_compare, entry_free, NULL);
@@ -268,7 +267,7 @@ int main() {
     .size = NUM_THREADS,
   };
 
-  init_shards(&shard_set, &reactors, 16);
+  init_shards(&shard_set, (Reactor*)&reactors, 16);
 
   struct hashmap *commands = init_commands();
 

@@ -6,12 +6,12 @@
 #include <string.h>
 
 #define ENTRY_INIT(k, klen, v, vlen) \
- &(Entry){ \
-  .key = k, \ 
-  .keylen = klen, \ 
-  .val = v, \ 
-  .vallen = vlen\ 
-};
+  &(Entry){                          \
+      .key = k,                      \
+      .keylen = klen,                \
+      .val = v,                      \
+      .vallen = vlen                 \
+  };
 
 typedef struct {
   const uint8_t *key;

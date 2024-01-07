@@ -115,7 +115,7 @@ DEFINE_COMMAND(
     Entry *entry;
   ),
   CMD_VARS(
-    uint8_t *key = key_buf_ptr;
+    const uint8_t *key = key_buf_ptr;
   ),
   CMD_PRE_INLINE_EXEC(),
   CMD_EXEC(
@@ -217,7 +217,7 @@ DEFINE_COMMAND(
     uint64_t res;
   ),
   CMD_VARS(
-    uint8_t *key = key_buf_ptr;
+    const uint8_t *key = key_buf_ptr;
   ),
   CMD_PRE_INLINE_EXEC(),
   CMD_EXEC(
@@ -348,7 +348,7 @@ bool try_modify_counter(Shard *shard, Conn *conn, const uint8_t *key, const size
   val += delta;
   char *buf = (char*)malloc(20); // 20 bytes for int64_t
   size_t len = sprintf(buf, "%ld", val);
-  Entry *new = ENTRY_INIT(key, keylen, buf, len);
+  Entry *new = ENTRY_INIT(key, keylen, (uint8_t*)buf, len);
   Entry *existing = (Entry *)hashmap_set_with_hash(db, new, hash);
   if (existing) {
     entry_free((void*)existing);
@@ -410,7 +410,7 @@ DEFINE_COMMAND(
     size_t shard_id;
   ),
   CMD_VARS(
-    uint8_t *key = key_buf_ptr;
+    const uint8_t *key = key_buf_ptr;
   ),
   CMD_PRE_INLINE_EXEC(),
   CMD_EXEC(),

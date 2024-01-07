@@ -12,10 +12,10 @@
 #include "bitset.h"
 #include "vector_types.h"
 #include "state.h"
-#include "vyukov_mpsc.h"
+#include "mpmcq.h"
 
 // typedef all callbacks
-typedef void (*reactor_on_cb) (Reactor *reactor, void *arg);
+typedef void (*reactor_on_cb) (GRContext *context, void *arg);
 typedef Conn *(*reactor_on_accept) (Reactor *reactor, struct sockaddr_in, int client_fd);
 typedef bool (*reactor_on_data_available) (GRContext *context, Conn *conn);
 
@@ -33,12 +33,13 @@ bool reactor_wakeup_pending(Reactor *reactor, GRContext *context);
 uint64_t reactor_poll_callbacks(Reactor *reactor, GRContext *context);
 bool reactor_send_message(Reactor *reactor, Reactor *target, void *message);
 bool reactor_has_pending_messages(Reactor *reactor);
+void reactor_conn_emplace(Reactor *reactor, Conn *conn);
 
 struct Reactor {
     size_t id;
     bool running;
     int wakeup_fd;
-    mpscq_t *cb_queue;
+    mpmcq *cb_queue;
     bitset64 soft_notify;
     atomic_bool sleeping;
 
