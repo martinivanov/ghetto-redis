@@ -255,7 +255,7 @@ void run_loop(void *arg) {
   reactor_run(reactor, context);
 }
 
-const size_t NUM_THREADS = 1;
+const size_t NUM_THREADS = 4;
 
 int main() {
   Shard shards[NUM_THREADS];

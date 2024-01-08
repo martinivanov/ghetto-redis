@@ -37,6 +37,7 @@ enum UringRequestType {
   READ,
   WRITE,
   CLOSE,
+  WAKEUP
 };
 
 // TODO: split struct into accept, read, write, close
@@ -64,6 +65,10 @@ typedef struct {
   enum UringRequestType type;
   Conn *conn;
 } reactor_uring_close_request;
+
+typedef struct {
+  enum UringRequestType type;
+} reactor_uring_wakeup_request;
 
 void free_request(reactor_uring_request *req) {
   free(req);
@@ -242,6 +247,8 @@ void reactor_run(Reactor *reactor, GRContext *context) {
   struct io_uring_cqe *cqe;
 
   while (reactor->running) {
+    reactor_wakeup_pending(reactor, context);
+
     int ret = io_uring_wait_cqe(&ring, &cqe);
     reactor_uring_request *req = (reactor_uring_request *)cqe->user_data;
 
@@ -264,6 +271,11 @@ void reactor_run(Reactor *reactor, GRContext *context) {
       case CLOSE: {
         LOG_DEBUG("CLOSE");
         reactor_uring_closed(reactor, cqe);
+        break;
+      }
+      case WAKEUP: {
+        LOG_DEBUG("WAKEUP");
+        free_request(req);
         break;
       }
     }
@@ -300,7 +312,30 @@ void reactor_run(Reactor *reactor, GRContext *context) {
 }
 
 bool reactor_wakeup_pending(Reactor *reactor, GRContext *context) {
-  return true;
+  struct io_uring *ring = (struct io_uring *)reactor->handle;
+
+  ShardSet *shard_set = context->shard_set;
+  for (size_t i = 0; i < shard_set->size; i++) {
+    if (BITSET64_GET(reactor->soft_notify, i)) {
+      Shard *shard = &shard_set->shards[i];
+      Reactor *r = shard->reactor;
+      struct io_uring *target_ring = (struct io_uring *)r->handle;
+
+      int target_fd = target_ring->ring_fd;
+      if (atomic_exchange(&r->sleeping, false)) {
+        struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+        io_uring_prep_msg_ring(sqe, target_fd, 0, reactor->id, 0);
+
+        reactor_uring_wakeup_request *req = malloc(sizeof(reactor_uring_wakeup_request));
+        req->type = WAKEUP;
+        io_uring_sqe_set_data(sqe, req);
+      }
+    }
+  }
+
+  io_uring_submit(ring);
+
+  BITSET64_RESET(reactor->soft_notify);
 }
 
 #endif // REACTOR_URING
