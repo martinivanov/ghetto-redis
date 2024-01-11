@@ -455,8 +455,7 @@ DEFINE_COMMAND(
     write_integer(conn, res);
   ),
   CMD_PRE_DISPATCH(
-    ctx->ctx.key = malloc(keylen);
-    memcpy(ctx->ctx.key, key, keylen);
+    ctx->ctx.key = key;
     ctx->ctx.keylen = keylen;
     ctx->ctx.hash = hash;
   ),
@@ -491,8 +490,7 @@ DEFINE_COMMAND(
     write_integer(conn, res);
   ),
   CMD_PRE_DISPATCH(
-    ctx->ctx.key = malloc(keylen);
-    memcpy(ctx->ctx.key, key, keylen);
+    ctx->ctx.key = key;
     ctx->ctx.keylen = keylen;
     ctx->ctx.hash = hash;
   ),
@@ -539,8 +537,7 @@ DEFINE_COMMAND(
     write_integer(conn, res);
   ),
   CMD_PRE_DISPATCH(
-    ctx->ctx.key = malloc(keylen);
-    memcpy(ctx->ctx.key, key, keylen);
+    ctx->ctx.key = key;
     ctx->ctx.keylen = keylen;
     ctx->ctx.hash = hash;
     ctx->delta = delta;
@@ -589,8 +586,7 @@ DEFINE_COMMAND(
     write_integer(conn, res);
   ),
   CMD_PRE_DISPATCH(
-    ctx->ctx.key = malloc(keylen);
-    memcpy(ctx->ctx.key, key, keylen);
+    ctx->key = key;
     ctx->ctx.keylen = keylen;
     ctx->ctx.hash = hash;
     ctx->delta = delta;
