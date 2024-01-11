@@ -192,27 +192,6 @@ void reactor_run(Reactor *reactor, GRContext *context) {
   }
 }
 
-bool reactor_wakeup_pending(Reactor *reactor, GRContext *context) {
-  bool notifed = false;
-  size_t shard_count = context->shard_set->size;
-  ShardSet *shard_set = context->shard_set;
-  for (size_t i = 0; i < shard_count; i++) {
-    if (BITSET64_GET(reactor->soft_notify, i)) {
-      Shard *shard = &shard_set->shards[i];
-      Reactor *r = shard->reactor;
-      if (atomic_exchange(&r->sleeping, false)) {
-        write(r->wakeup_fd, &(uint64_t){1}, sizeof(uint64_t));
-        notifed = true;
-      }
-    }
-  }
-
-  // reset the mask
-  BITSET64_RESET(reactor->soft_notify);
-
-  return notifed;
-}
-
 int32_t reactor_epoll_accept(Reactor *reactor, int fd_listener) {
   struct sockaddr_in client_addr = {};
   socklen_t socklen = sizeof(client_addr);

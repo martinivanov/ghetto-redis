@@ -68,6 +68,7 @@ typedef struct {
 
 typedef struct {
   enum UringRequestType type;
+  uint64_t count;
 } reactor_uring_wakeup_request;
 
 void free_request(reactor_uring_request *req) {
@@ -115,6 +116,12 @@ void add_close_request(struct io_uring *ring, Conn *conn) {
   io_uring_sqe_set_data(sqe, req);
 }
 
+void add_wakeup_request(struct io_uring *ring, int fd, reactor_uring_wakeup_request *req) {
+  struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+  io_uring_prep_read(sqe, fd, &req->count, sizeof(req->count), 0);
+  io_uring_sqe_set_data(sqe, req);
+}
+
 void reactor_uring_accepted(Reactor *reactor, struct io_uring_cqe *cqe) {
    struct io_uring *ring = (struct io_uring *)reactor->handle;
    reactor_uring_accept_request *req = (reactor_uring_accept_request *)cqe->user_data;
@@ -133,7 +140,6 @@ void reactor_uring_accepted(Reactor *reactor, struct io_uring_cqe *cqe) {
    }
 
    add_read_request(ring, conn);
-   io_uring_submit(ring);
 }
 
 void reactor_uring_data_read(Reactor *reactor, GRContext *context, struct io_uring_cqe *cqe) {
@@ -146,7 +152,6 @@ void reactor_uring_data_read(Reactor *reactor, GRContext *context, struct io_uri
     conn->flags |= END;
     free_request(req);
     add_close_request(ring, conn);
-    io_uring_submit(ring);
     return;
   }
 
@@ -165,17 +170,15 @@ void reactor_uring_data_read(Reactor *reactor, GRContext *context, struct io_uri
   if (conn->flags & END) {
     free_request(req);
     add_close_request(ring, conn);
-    io_uring_submit(ring);
     return;
   }
   
-  size_t remaining_send = conn->send_buf_size - conn->send_buf_sent;
-  if (conn->send_buf_size > 0) {
-    add_write_request(ring, conn);
-  }  
+  // size_t remaining_send = conn->send_buf_size - conn->send_buf_sent;
+  // if (conn->send_buf_size > 0) {
+  //   add_write_request(ring, conn);
+  // }  
 
   add_read_request(ring, conn);
-  io_uring_submit(ring);
 
   free_request(req);
 }
@@ -192,7 +195,6 @@ void reactor_uring_data_written(Reactor *reactor, GRContext *context, struct io_
   if (remaining > 0) {
     LOG_DEBUG("more data available in the response buffer remaining=%zu", remaining);
     add_write_request(ring, conn);
-    io_uring_submit(ring);
   } else {
     LOG_DEBUG("response buffer fully flushed, resetting");
     conn->send_buf_size = 0;
@@ -200,6 +202,19 @@ void reactor_uring_data_written(Reactor *reactor, GRContext *context, struct io_
   } 
 
   free_request(req);
+
+  conn->flags &= ~BLOCKED;
+}
+
+void reactor_uring_woken_up(Reactor *reactor, GRContext *context, struct io_uring_cqe *cqe) {
+  struct io_uring *ring = (struct io_uring *)reactor->handle;
+  reactor_uring_wakeup_request *req = (reactor_uring_wakeup_request *)cqe->user_data;
+  uint64_t count = reactor_poll_callbacks(reactor, context);
+
+
+  atomic_store(&reactor->sleeping, true);
+
+  add_wakeup_request(ring, reactor->wakeup_fd, req);
 }
 
 void reactor_uring_closed(Reactor *reactor, struct io_uring_cqe *cqe) {
@@ -243,15 +258,20 @@ void reactor_run(Reactor *reactor, GRContext *context) {
 
   rv = io_uring_queue_init(128, &ring, 0);
   add_accept_request(&ring, fd_listener);
+
+  reactor_uring_wakeup_request wakeup_req = {
+    .type = WAKEUP
+  };
+
+  add_wakeup_request(&ring, reactor->wakeup_fd, &wakeup_req);
+
   io_uring_submit(&ring);
+
   struct io_uring_cqe *cqe;
 
   while (reactor->running) {
-    reactor_wakeup_pending(reactor, context);
-
     int ret = io_uring_wait_cqe(&ring, &cqe);
     reactor_uring_request *req = (reactor_uring_request *)cqe->user_data;
-
     switch (req->type) {
       case ACCEPT: {
         LOG_DEBUG("ACCEPT");
@@ -275,12 +295,27 @@ void reactor_run(Reactor *reactor, GRContext *context) {
       }
       case WAKEUP: {
         LOG_DEBUG("WAKEUP");
-        free_request(req);
+        reactor_uring_woken_up(reactor, context, cqe);
         break;
       }
     }
-  
+
     io_uring_cqe_seen(&ring, cqe);
+
+    for (size_t i = 0; i < size_vector_Conn_ptr(reactor->conns); i++) {
+      Conn *conn = reactor->conns->array[i];
+      if (conn) {
+        size_t remaining = conn->send_buf_size - conn->send_buf_sent;
+        if (remaining > 0 && !(conn->flags & BLOCKED)) {
+          add_write_request(&ring, conn);
+          conn->flags |= BLOCKED;
+        }
+      }
+    }
+
+    io_uring_submit(&ring);
+
+    reactor_wakeup_pending(reactor, context);
   }
 
   size_t pending_close_requests = 0;
@@ -311,31 +346,30 @@ void reactor_run(Reactor *reactor, GRContext *context) {
   } while (pending_close_requests > 0);
 }
 
-bool reactor_wakeup_pending(Reactor *reactor, GRContext *context) {
-  struct io_uring *ring = (struct io_uring *)reactor->handle;
+// bool reactor_uring_wakeup_pending(Reactor *reactor, GRContext *context) {
+//   struct io_uring *ring = (struct io_uring *)reactor->handle;
 
-  ShardSet *shard_set = context->shard_set;
-  for (size_t i = 0; i < shard_set->size; i++) {
-    if (BITSET64_GET(reactor->soft_notify, i)) {
-      Shard *shard = &shard_set->shards[i];
-      Reactor *r = shard->reactor;
-      struct io_uring *target_ring = (struct io_uring *)r->handle;
+//   ShardSet *shard_set = context->shard_set;
+//   for (size_t i = 0; i < shard_set->size; i++) {
+//     if (BITSET64_GET(reactor->soft_notify, i)) {
+//       Shard *shard = &shard_set->shards[i];
+//       Reactor *r = shard->reactor;
+//       struct io_uring *target_ring = (struct io_uring *)r->handle;
 
-      int target_fd = target_ring->ring_fd;
-      if (atomic_exchange(&r->sleeping, false)) {
-        struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
-        io_uring_prep_msg_ring(sqe, target_fd, 0, reactor->id, 0);
+//       int target_fd = target_ring->ring_fd;
+//       if (atomic_exchange(&r->sleeping, false)) {
+//         struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+//         reactor_uring_wakeup_request *req = malloc(sizeof(reactor_uring_wakeup_request));
+//         req->type = WAKEUP;
+//         io_uring_prep_msg_ring(sqe, target_fd, 0, 0, 0);
+//         io_uring_sqe_set_data(sqe, req);
+//       }
+//     }
+//   }
 
-        reactor_uring_wakeup_request *req = malloc(sizeof(reactor_uring_wakeup_request));
-        req->type = WAKEUP;
-        io_uring_sqe_set_data(sqe, req);
-      }
-    }
-  }
+//   io_uring_submit(ring);
 
-  io_uring_submit(ring);
-
-  BITSET64_RESET(reactor->soft_notify);
-}
+//   BITSET64_RESET(reactor->soft_notify);
+// }
 
 #endif // REACTOR_URING

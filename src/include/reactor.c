@@ -1,5 +1,6 @@
 
 #include <stdlib.h>
+#include <unistd.h>
 
 #include "mpmcq.h"
 #include "reactor.h"
@@ -89,4 +90,29 @@ void reactor_conn_emplace(Reactor *reactor, Conn *conn) {
 
   conns->array[conn->fd] = conn;
   conns->used = conns->size;
+}
+
+bool reactor_wakeup_pending(Reactor *reactor, GRContext *context) {
+  if (reactor->soft_notify == 0) {
+    return false;
+  }
+
+  bool notifed = false;
+  size_t shard_count = context->shard_set->size;
+  ShardSet *shard_set = context->shard_set;
+  for (size_t i = 0; i < shard_count; i++) {
+    if (BITSET64_GET(reactor->soft_notify, i)) {
+      Shard *shard = &shard_set->shards[i];
+      Reactor *r = shard->reactor;
+      if (atomic_exchange(&r->sleeping, false)) {
+        write(r->wakeup_fd, &(uint64_t){1}, sizeof(uint64_t));
+        notifed = true;
+      }
+    }
+  }
+
+  // reset the mask
+  BITSET64_RESET(reactor->soft_notify);
+
+  return notifed;
 }

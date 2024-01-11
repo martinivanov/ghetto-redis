@@ -1,6 +1,13 @@
 {
     "files.associations": {
         "typeinfo": "c",
-        "reactor.h": "c"
+        "reactor.h": "c",
+        "state.h": "c",
+        "*.tcc": "c",
+        "ostream": "c",
+        "liburing.h": "c",
+        "fcntl.h": "c",
+        "errno.h": "c",
+        "unistd.h": "c"
     }
 }
