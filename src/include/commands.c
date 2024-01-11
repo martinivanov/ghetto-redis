@@ -586,7 +586,7 @@ DEFINE_COMMAND(
     write_integer(conn, res);
   ),
   CMD_PRE_DISPATCH(
-    ctx->key = key;
+    ctx->ctx.key = key;
     ctx->ctx.keylen = keylen;
     ctx->ctx.hash = hash;
     ctx->delta = delta;
